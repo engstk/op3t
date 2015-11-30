@@ -311,6 +311,14 @@ u32 convert_ramp_ms_store (u32 ramp_step_ms)
 	return ramp_step_ms;
 }
 
+int check_for_notification_led(struct led_classdev *led_cdev)
+{
+	if (strcmp(led_cdev->name, "button-backlight") == 0)
+		return 0;
+
+	return 1;
+}
+
 int convert_brightness (int brightness)
 {
 	pr_debug("Boeffla-LED: brightness orig = %d\n", brightness);
@@ -1893,8 +1901,10 @@ static void qpnp_led_set(struct led_classdev *led_cdev,
 	if (value > led->cdev.max_brightness)
 		value = led->cdev.max_brightness;
 
-	// led->cdev.brightness = value;
-	led->cdev.brightness = convert_brightness(value);
+	if (check_for_notification_led(led_cdev))
+		led->cdev.brightness = convert_brightness(value);
+	else
+		led->cdev.brightness = value;
 
 	if (led->in_order_command_processing)
 		queue_work(led->workqueue, &led->work);
@@ -2405,7 +2415,8 @@ static ssize_t pause_hi_store(struct device *dev,
 		return ret;
 	led = container_of(led_cdev, struct qpnp_led_data, cdev);
 
-	pause_hi = convert_pause_hi_store(pause_hi);
+	if (check_for_notification_led(led_cdev))
+		pause_hi = convert_pause_hi_store(pause_hi);
 
 	switch (led->id) {
 	case QPNP_ID_LED_MPP:
@@ -2520,7 +2531,8 @@ static ssize_t ramp_step_ms_store(struct device *dev,
 		return ret;
 	led = container_of(led_cdev, struct qpnp_led_data, cdev);
 
-	ramp_step_ms = convert_ramp_ms_store(ramp_step_ms);
+	if (check_for_notification_led(led_cdev))
+		ramp_step_ms = convert_ramp_ms_store(ramp_step_ms);
 
 	switch (led->id) {
 	case QPNP_ID_LED_MPP:
@@ -2787,16 +2799,22 @@ static ssize_t blink_store(struct device *dev,
 	case QPNP_ID_RGB_RED:
 	case QPNP_ID_RGB_GREEN:
 	case QPNP_ID_RGB_BLUE:
-		if (led_speed != LED_SPEED_CONT_MODE)
-			led_blink(led, led->rgb_cfg->pwm_cfg);
-		else
+		if (check_for_notification_led(led_cdev))
 		{
-			led->cdev.brightness = convert_brightness(led->cdev.max_brightness);
-			if (led->in_order_command_processing)
-				queue_work(led->workqueue, &led->work);
+			if (led_speed != LED_SPEED_CONT_MODE)
+				led_blink(led, led->rgb_cfg->pwm_cfg);
 			else
-				schedule_work(&led->work);
+			{
+				led->cdev.brightness = convert_brightness(led->cdev.max_brightness);
+				if (led->in_order_command_processing)
+					queue_work(led->workqueue, &led->work);
+				else
+					schedule_work(&led->work);
+			}
 		}
+		else
+			led_blink(led, led->rgb_cfg->pwm_cfg);
+
 		break;
 	case QPNP_ID_KPDBL:
 		led_blink(led, led->kpdbl_cfg->pwm_cfg);
