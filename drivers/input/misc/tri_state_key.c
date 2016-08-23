@@ -83,12 +83,12 @@ static void switch_dev_work(struct work_struct *work)
 	if(!gpio_get_value(switch_data->key3_gpio))
 	{
 		mode = 3;
-		keyCode = keyCode_slider_middle;
+		keyCode = keyCode_slider_bottom;
 	}
 	else if(!gpio_get_value(switch_data->key2_gpio))
 	{
 		mode = 2;
-		keyCode = keyCode_slider_bottom;
+		keyCode = keyCode_slider_middle;
 	}
 	else if(!gpio_get_value(switch_data->key1_gpio))
 	{
