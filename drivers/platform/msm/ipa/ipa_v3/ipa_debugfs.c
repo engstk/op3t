@@ -1722,10 +1722,8 @@ static ssize_t ipa3_enable_ipc_low(struct file *file,
 					"ipa_low", 0);
 		}
 
-		if (ipa3_ctx->logbuf_low == NULL) {
+		if (ipa3_ctx->logbuf_low == NULL)
 			IPAERR("failed to get logbuf_low\n");
-			return -EFAULT;
-		}
 	} else {
 		if (ipa3_ctx->logbuf_low)
 			ipc_log_context_destroy(ipa3_ctx->logbuf_low);
