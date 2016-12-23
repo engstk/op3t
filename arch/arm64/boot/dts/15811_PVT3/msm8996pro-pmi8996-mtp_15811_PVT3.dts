@@ -22,3 +22,7 @@
 	compatible = "qcom,msm8996-mtp", "qcom,msm8996", "qcom,mtp";
 	qcom,board-id = <8 0 15811 28>;
 };
+
+&pil_gpu {
+	qcom,firmware-name = "a530_zap-pro";
+};
