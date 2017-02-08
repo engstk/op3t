@@ -171,9 +171,6 @@ int up_swipe_enable =0;//"down to up |"
 int letter_w_enable =0;//"(W)"
 int letter_m_enable =0;//"(M)"
 static int gesture_switch = 0;
-
-int DisableGestureHaptic = 0;
-
 #endif
 
 /*********************for Debug LOG switch*******************/
@@ -222,7 +219,6 @@ static struct workqueue_struct *synaptics_wq = NULL;
 static struct workqueue_struct *synaptics_report = NULL;
 static struct workqueue_struct *get_base_report = NULL;
 static struct proc_dir_entry *prEntry_tp = NULL;
-void qpnp_hap_ignore_next_request(void);
 
 
 #ifdef SUPPORT_GESTURE
@@ -1259,9 +1255,6 @@ Left2RightSwip:%d Right2LeftSwip:%d Up2DownSwip:%d Down2UpSwip:%d\n",
 		|| (gesture == DouSwip && double_swipe_enable) || (gesture == Left2RightSwip && right_swipe_enable)
 		|| (gesture == Right2LeftSwip && left_swipe_enable) || (gesture == Up2DownSwip && down_swipe_enable)
 		|| (gesture == Down2UpSwip && up_swipe_enable)) {
-		if (DisableGestureHaptic)
-			qpnp_hap_ignore_next_request();
-		
 		gesture_upload = gesture;
 		input_report_key(ts->input_dev, keyCode, 1);
 		input_sync(ts->input_dev);
@@ -1658,27 +1651,6 @@ static void gesture_enable(struct synaptics_ts_data *ts)
 				|| left_swipe_enable || down_swipe_enable || up_swipe_enable ? 1 : 0;
 }
 
-static ssize_t haptic_feedback_disable_read_func(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
-{
-	int ret = 0;
-	char page[PAGESIZE];
-
-	ret = sprintf(page, "%d\n", DisableGestureHaptic);
-	ret = simple_read_from_buffer(user_buf, count, ppos, page, strlen(page));
-
-	return ret;
-}
-
-static ssize_t haptic_feedback_disable_write_func(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
-{
-	int ret = 0;
-
-	sscanf(buf, "%d", &ret);
-	DisableGestureHaptic = ret;
-
-	return count;
-}
-
 // chenggang.li@BSP.TP modified for oem 2014-08-08 create node
 /******************************start****************************/
 static const struct file_operations tp_gesture_proc_fops = {
@@ -1737,13 +1709,6 @@ TS_ENABLE_FOPS(right_arrow);
 TS_ENABLE_FOPS(right_swipe);
 TS_ENABLE_FOPS(up_arrow);
 TS_ENABLE_FOPS(up_swipe);
-
-static const struct file_operations haptic_feedback_disable_proc_fops = {
-	.write = haptic_feedback_disable_write_func,
-	.read =  haptic_feedback_disable_read_func,
-	.open = simple_open,
-	.owner = THIS_MODULE,
-};
 #endif
 static int page ,address,block;
 static ssize_t synap_read_address(struct file *file, char __user *user_buf, size_t count, loff_t *ppos)
@@ -3213,12 +3178,6 @@ static int init_synaptics_proc(void)
 	if(prEntry_tmp == NULL){
 		ret = -ENOMEM;
 		TPD_ERR("Couldn't create down_swipe_enable\n");
-	}
-
-	prEntry_tmp = proc_create("haptic_feedback_disable", 0666, prEntry_tp, &haptic_feedback_disable_proc_fops);
-	if(prEntry_tmp == NULL){
-		ret = -ENOMEM;
-		TPD_ERR("Couldn't create haptic_feedback_disable\n");
 	}
 #endif
 
