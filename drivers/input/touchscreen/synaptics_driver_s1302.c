@@ -850,8 +850,9 @@ static void synaptics_ts_report(struct synaptics_ts_data *ts )
         else
             int_key(ts);
 #else
-		if (!virtual_key_enable)
+		if (!virtual_key_enable && !ts->stop_keypad) {
             int_key(ts);
+		}
 #endif
     }
 END:
