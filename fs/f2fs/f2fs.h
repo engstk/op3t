@@ -91,6 +91,8 @@ extern char *fault_name[FAULT_MAX];
 #define F2FS_MOUNT_ADAPTIVE		0x00020000
 #define F2FS_MOUNT_LFS			0x00040000
 
+#define LOOKUP_CASE_INSENSITIVE		0x8000
+
 #define clear_opt(sbi, option)	((sbi)->mount_opt.opt &= ~F2FS_MOUNT_##option)
 #define set_opt(sbi, option)	((sbi)->mount_opt.opt |= F2FS_MOUNT_##option)
 #define test_opt(sbi, option)	((sbi)->mount_opt.opt & F2FS_MOUNT_##option)
@@ -104,6 +106,12 @@ typedef u32 block_t;	/*
 			 * address format, __le32.
 			 */
 typedef u32 nid_t;
+
+struct ci_name_buf {
+	char name[F2FS_NAME_LEN+1];
+	f2fs_hash_t name_hash;
+	bool match;
+};
 
 struct f2fs_mount_info {
 	unsigned int	opt;
@@ -2235,7 +2243,7 @@ void set_de_type(struct f2fs_dir_entry *de, umode_t mode);
 unsigned char get_de_type(struct f2fs_dir_entry *de);
 struct f2fs_dir_entry *find_target_dentry(struct fscrypt_name *fname,
 			f2fs_hash_t namehash, int *max_slots,
-			struct f2fs_dentry_ptr *d);
+			struct f2fs_dentry_ptr *d, struct ci_name_buf *ci_name_bu);
 int f2fs_fill_dentries(struct dir_context *ctx, struct f2fs_dentry_ptr *d,
 			unsigned int start_pos, struct fscrypt_str *fstr);
 void do_make_empty_dir(struct inode *inode, struct inode *parent,
@@ -2248,9 +2256,11 @@ void update_parent_metadata(struct inode *dir, struct inode *inode,
 int room_for_filename(const void *bitmap, int slots, int max_slots);
 void f2fs_drop_nlink(struct inode *dir, struct inode *inode);
 struct f2fs_dir_entry *__f2fs_find_entry(struct inode *dir,
-			struct fscrypt_name *fname, struct page **res_page);
+			struct fscrypt_name *fname, struct page **res_page,
+			struct ci_name_buf *ci_name_bu);
 struct f2fs_dir_entry *f2fs_find_entry(struct inode *dir,
-			struct qstr *child, struct page **res_page);
+			struct qstr *child, struct page **res_page,
+			struct ci_name_buf *ci_name_bu);
 struct f2fs_dir_entry *f2fs_parent_dir(struct inode *dir, struct page **p);
 ino_t f2fs_inode_by_name(struct inode *dir, struct qstr *qstr,
 			struct page **page);
