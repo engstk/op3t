@@ -141,7 +141,7 @@ struct share_mem_buf {
 struct mem_map_table {
 	dma_addr_t		phys;
 	void			*data;
-	size_t			size; /* size of buffer */
+	uint32_t		size; /* size of buffer */
 	struct ion_handle	*handle;
 	struct ion_client	*client;
 };
