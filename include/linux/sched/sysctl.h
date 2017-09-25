@@ -44,8 +44,6 @@ extern unsigned int sysctl_sched_wakeup_load_threshold;
 extern unsigned int sysctl_sched_window_stats_policy;
 extern unsigned int sysctl_sched_ravg_hist_size;
 extern unsigned int sysctl_sched_cpu_high_irqload;
-extern int sysctl_affinity_switch;
-extern int sysctl_affinity_core;
 
 #if defined(CONFIG_SCHED_FREQ_INPUT) || defined(CONFIG_SCHED_HMP)
 extern unsigned int sysctl_sched_init_task_load_pct;
@@ -132,12 +130,6 @@ extern int sched_boost_handler(struct ctl_table *table, int write,
 extern int sched_window_update_handler(struct ctl_table *table,
 		 int write, void __user *buffer, size_t *lenp, loff_t *ppos);
 
-int affinity_switch_handler(struct ctl_table *table, int write,
-            void __user *buffer, size_t *lenp,
-            loff_t *ppos);
-int affinity_core_handler(struct ctl_table *table, int write,
-            void __user *buffer, size_t *lenp,
-            loff_t *ppos);
 #ifdef CONFIG_SCHED_DEBUG
 static inline unsigned int get_sysctl_timer_migration(void)
 {
