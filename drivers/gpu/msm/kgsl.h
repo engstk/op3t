@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,12 +26,13 @@
 #include <linux/mm.h>
 #include <linux/dma-attrs.h>
 #include <linux/uaccess.h>
+#include <linux/kthread.h>
 #include <asm/cacheflush.h>
 
 /* The number of memstore arrays limits the number of contexts allowed.
  * If more contexts are needed, update multiple for MEMSTORE_SIZE
  */
-#define KGSL_MEMSTORE_SIZE	((int)(PAGE_SIZE * 2))
+#define KGSL_MEMSTORE_SIZE	((int)(PAGE_SIZE * 8))
 #define KGSL_MEMSTORE_GLOBAL	(0)
 #define KGSL_PRIORITY_MAX_RB_LEVELS 4
 #define KGSL_MEMSTORE_MAX	(KGSL_MEMSTORE_SIZE / \
@@ -132,6 +133,8 @@ struct kgsl_driver {
 	unsigned int full_cache_threshold;
 	struct workqueue_struct *workqueue;
 	struct workqueue_struct *mem_workqueue;
+	struct kthread_worker worker;
+	struct task_struct *worker_thread;
 };
 
 extern struct kgsl_driver kgsl_driver;
@@ -275,7 +278,7 @@ struct kgsl_event {
 	void *priv;
 	struct list_head node;
 	unsigned int created;
-	struct work_struct work;
+	struct kthread_work work;
 	int result;
 	struct kgsl_event_group *group;
 };

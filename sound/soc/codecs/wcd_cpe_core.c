@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -891,14 +891,7 @@ static int wcd_cpe_enable(struct wcd_cpe_core *core,
 			 * instead SSR handler will control CPE.
 			 */
 			wcd_cpe_enable_cpe_clks(core, false);
-			/*
-			 * During BUS_DOWN event, possibly the
-			 * irq driver is under cleanup, do not request
-			 * cleanup of irqs here, rather cleanup irqs
-			 * once BUS_UP event is received.
-			 */
-			if (core->ssr_type != WCD_CPE_BUS_DOWN_EVENT)
-				wcd_cpe_cleanup_irqs(core);
+			wcd_cpe_cleanup_irqs(core);
 			goto done;
 		}
 
@@ -1149,7 +1142,6 @@ int wcd_cpe_ssr_event(void *core_handle,
 		break;
 
 	case WCD_CPE_BUS_UP_EVENT:
-		wcd_cpe_cleanup_irqs(core);
 		wcd_cpe_set_and_complete(core, WCD_CPE_BUS_READY);
 		/*
 		 * In case of bus up event ssr_type will be changed
@@ -1739,10 +1731,10 @@ static ssize_t fw_name_store(struct wcd_cpe_core *core,
 	if (pos)
 		copy_count = pos - buf;
 
-	if (copy_count > WCD_CPE_IMAGE_FNAME_MAX) {
+	if (copy_count > (WCD_CPE_IMAGE_FNAME_MAX - 1)) {
 		dev_err(core->dev,
 			"%s: Invalid length %d, max allowed %d\n",
-			__func__, copy_count, WCD_CPE_IMAGE_FNAME_MAX);
+			__func__, copy_count, WCD_CPE_IMAGE_FNAME_MAX - 1);
 		return -EINVAL;
 	}
 
@@ -3051,25 +3043,9 @@ static int wcd_cpe_set_one_param(void *core_handle,
 		rc = wcd_cpe_send_param_epd_thres(core, session,
 						data, &ids);
 		break;
-	case LSM_OPERATION_MODE: {
-		struct cpe_lsm_ids connectport_ids;
-
-		rc = wcd_cpe_send_param_opmode(core, session,
-					data, &ids);
-		if (rc)
-			break;
-
-		connectport_ids.module_id = LSM_MODULE_ID_FRAMEWORK;
-		connectport_ids.param_id = LSM_PARAM_ID_CONNECT_TO_PORT;
-
-		rc = wcd_cpe_send_param_connectport(core, session, NULL,
-				       &connectport_ids, CPE_AFE_PORT_1_TX);
-		if (rc)
-			dev_err(core->dev,
-				"%s: send_param_connectport failed, err %d\n",
-				__func__, rc);
+	case LSM_OPERATION_MODE:
+		rc = wcd_cpe_send_param_opmode(core, session, data, &ids);
 		break;
-	}
 	case LSM_GAIN:
 		rc = wcd_cpe_send_param_gain(core, session, data, &ids);
 		break;

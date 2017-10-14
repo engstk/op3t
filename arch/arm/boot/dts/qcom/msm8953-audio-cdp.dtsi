@@ -13,7 +13,7 @@
 
 &int_codec {
 	status = "okay";
-	qcom,msm-hs-micbias-type = "external";
+	qcom,msm-hs-micbias-type = "internal";
 };
 
 &pm8953_diangu_dig {
@@ -21,14 +21,6 @@
 };
 
 &pm8953_diangu_analog {
-	status = "okay";
-};
-
-&wsa881x_i2c_e {
-	status = "okay";
-};
-
-&wsa881x_i2c_44 {
 	status = "okay";
 };
 

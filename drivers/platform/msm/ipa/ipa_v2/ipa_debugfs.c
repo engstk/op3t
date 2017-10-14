@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -80,6 +80,12 @@ const char *ipa_event_name[] = {
 	__stringify(ECM_DISCONNECT),
 	__stringify(IPA_TETHERING_STATS_UPDATE_STATS),
 	__stringify(IPA_TETHERING_STATS_UPDATE_NETWORK_STATS),
+	__stringify(IPA_PER_CLIENT_STATS_CONNECT_EVENT),
+	__stringify(IPA_PER_CLIENT_STATS_DISCONNECT_EVENT),
+	__stringify(ADD_VLAN_IFACE),
+	__stringify(DEL_VLAN_IFACE),
+	__stringify(ADD_L2TP_VLAN_MAPPING),
+	__stringify(DEL_L2TP_VLAN_MAPPING)
 };
 
 const char *ipa_hdr_l2_type_name[] = {
@@ -123,6 +129,7 @@ static struct dentry *dfile_ipa_poll_iteration;
 static char dbg_buff[IPA_MAX_MSG_LEN];
 static char *active_clients_buf;
 static s8 ep_reg_idx;
+static void *ipa_ipc_low_buff;
 
 int _ipa_read_gen_reg_v1_1(char *buff, int max_len)
 {
@@ -1272,8 +1279,9 @@ static ssize_t ipa_read_wdi(struct file *file, char __user *ubuf,
 			"RX num_db=%u\n"
 			"RX num_unexpected_db=%u\n"
 			"RX num_pkts_in_dis_uninit_state=%u\n"
-			"num_ic_inj_vdev_change=%u\n"
-			"num_ic_inj_fw_desc_change=%u\n"
+			"RX num_ic_inj_vdev_change=%u\n"
+			"RX num_ic_inj_fw_desc_change=%u\n"
+			"RX num_qmb_int_handled=%u\n"
 			"RX reserved1=%u\n"
 			"RX reserved2=%u\n",
 			stats.rx_ch_stats.max_outstanding_pkts,
@@ -1295,6 +1303,7 @@ static ssize_t ipa_read_wdi(struct file *file, char __user *ubuf,
 			stats.rx_ch_stats.num_pkts_in_dis_uninit_state,
 			stats.rx_ch_stats.num_ic_inj_vdev_change,
 			stats.rx_ch_stats.num_ic_inj_fw_desc_change,
+			stats.rx_ch_stats.num_qmb_int_handled,
 			stats.rx_ch_stats.reserved1,
 			stats.rx_ch_stats.reserved2);
 		cnt += nbytes;
@@ -1802,6 +1811,41 @@ static ssize_t ipa_write_polling_iteration(struct file *file,
 	return count;
 }
 
+static ssize_t ipa_enable_ipc_low(struct file *file,
+	const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	unsigned long missing;
+	s8 option = 0;
+
+	if (sizeof(dbg_buff) < count + 1)
+		return -EFAULT;
+
+	missing = copy_from_user(dbg_buff, ubuf, count);
+	if (missing)
+		return -EFAULT;
+
+	dbg_buff[count] = '\0';
+	if (kstrtos8(dbg_buff, 0, &option))
+		return -EFAULT;
+
+	mutex_lock(&ipa_ctx->lock);
+	if (option) {
+		if (!ipa_ipc_low_buff) {
+			ipa_ipc_low_buff =
+				ipc_log_context_create(IPA_IPC_LOG_PAGES,
+				"ipa_low", 0);
+			if (ipa_ipc_low_buff == NULL)
+				IPAERR("failed to get logbuf_low\n");
+		}
+		ipa_ctx->logbuf_low = ipa_ipc_low_buff;
+	} else {
+		ipa_ctx->logbuf_low = NULL;
+	}
+	mutex_unlock(&ipa_ctx->lock);
+
+	return count;
+}
+
 const struct file_operations ipa_gen_reg_ops = {
 	.read = ipa_read_gen_reg,
 };
@@ -1878,6 +1922,10 @@ const struct file_operations ipa_status_stats_ops = {
 const struct file_operations ipa2_active_clients = {
 	.read = ipa2_print_active_clients_log,
 	.write = ipa2_clear_active_clients_log,
+};
+
+const struct file_operations ipa_ipc_low_ops = {
+	.write = ipa_enable_ipc_low,
 };
 
 const struct file_operations ipa_rx_poll_time_ops = {
@@ -2092,6 +2140,13 @@ void ipa_debugfs_init(void)
 		&ipa_ctx->ctrl->clock_scaling_bw_threshold_turbo);
 	if (!file) {
 		IPAERR("could not create bw_threshold_turbo_mbps\n");
+		goto fail;
+	}
+
+	file = debugfs_create_file("enable_low_prio_print", write_only_mode,
+		dent, 0, &ipa_ipc_low_ops);
+	if (!file) {
+		IPAERR("could not create enable_low_prio_print file\n");
 		goto fail;
 	}
 

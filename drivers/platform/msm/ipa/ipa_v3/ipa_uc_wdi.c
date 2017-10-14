@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -471,6 +471,9 @@ int ipa3_get_wdi_stats(struct IpaHwStatsWDIInfoData_t *stats)
 	RX_STATS(num_db);
 	RX_STATS(num_unexpected_db);
 	RX_STATS(num_pkts_in_dis_uninit_state);
+	RX_STATS(num_ic_inj_vdev_change);
+	RX_STATS(num_ic_inj_fw_desc_change);
+	RX_STATS(num_qmb_int_handled);
 	RX_STATS(reserved1);
 	RX_STATS(reserved2);
 
@@ -1183,6 +1186,8 @@ int ipa3_connect_wdi_pipe(struct ipa_wdi_in_params *in,
 		IPADBG("Skipping endpoint configuration.\n");
 	}
 
+	ipa3_enable_data_path(ipa_ep_idx);
+
 	out->clnt_hdl = ipa_ep_idx;
 
 	if (!ep->skip_ep_cfg && IPA_CLIENT_IS_PROD(in->sys.client))
@@ -1605,7 +1610,7 @@ int ipa3_write_qmapid_wdi_pipe(u32 clnt_hdl, u8 qmap_id)
 
 	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes ||
 	    ipa3_ctx->ep[clnt_hdl].valid == 0) {
-		IPAERR("bad parm, %d\n", clnt_hdl);
+		IPAERR_RL("bad parm, %d\n", clnt_hdl);
 		return -EINVAL;
 	}
 
@@ -1618,7 +1623,7 @@ int ipa3_write_qmapid_wdi_pipe(u32 clnt_hdl, u8 qmap_id)
 	ep = &ipa3_ctx->ep[clnt_hdl];
 
 	if (!(ep->uc_offload_state & IPA_WDI_CONNECTED)) {
-		IPAERR("WDI channel bad state %d\n", ep->uc_offload_state);
+		IPAERR_RL("WDI channel bad state %d\n", ep->uc_offload_state);
 		return -EFAULT;
 	}
 	IPA_ACTIVE_CLIENTS_INC_EP(ipa3_get_client_mapping(clnt_hdl));

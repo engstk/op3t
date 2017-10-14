@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -527,7 +527,7 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 {
 	struct q6v5_data *drv = container_of(pil, struct q6v5_data, desc);
 	struct modem_data *md = dev_get_drvdata(pil->dev);
-	const struct firmware *fw, *dp_fw;
+	const struct firmware *fw, *dp_fw = NULL;
 	char fw_name_legacy[10] = "mba.b00";
 	char fw_name[10] = "mba.mbn";
 	char *dp_name = "msadp";
@@ -595,7 +595,15 @@ int pil_mss_reset_load_mba(struct pil_desc *pil)
 
 	/* Load the MBA image into memory */
 	count = fw->size;
-	memcpy(mba_dp_virt, data, count);
+	if (count <= SZ_1M) {
+		/* Ensures memcpy is done for max 1MB fw size */
+		memcpy(mba_dp_virt, data, count);
+	} else {
+		dev_err(pil->dev, "%s fw image loading into memory is failed due to fw size overflow\n",
+			__func__);
+		 ret = -EINVAL;
+		 goto err_mba_data;
+	}
 	/* Ensure memcpy of the MBA memory is done before loading the DP */
 	wmb();
 

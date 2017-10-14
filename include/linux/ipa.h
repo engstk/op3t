@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -37,6 +37,14 @@ enum ipa_nat_en_type {
 	IPA_BYPASS_NAT,
 	IPA_SRC_NAT,
 	IPA_DST_NAT,
+};
+
+/**
+ * enum ipa_ipv6ct_en_type - IPv6CT setting type in IPA end-point
+ */
+enum ipa_ipv6ct_en_type {
+	IPA_BYPASS_IPV6CT,
+	IPA_ENABLE_IPV6CT,
 };
 
 /**
@@ -114,6 +122,19 @@ enum hdr_total_len_or_pad_type {
  */
 struct ipa_ep_cfg_nat {
 	enum ipa_nat_en_type nat_en;
+};
+
+/**
+ * struct ipa_ep_cfg_conn_track - IPv6 Connection tracking configuration in
+ *	IPA end-point
+ * @conn_track_en: Defines speculative conn_track action, means if specific
+ *		   pipe needs to have UL/DL IPv6 Connection Tracking or Bypass
+ *		   IPv6 Connection Tracking. 0: Bypass IPv6 Connection Tracking
+ *					     1: IPv6 UL/DL Connection Tracking.
+ *		  Valid for Input Pipes only (IPA consumer)
+ */
+struct ipa_ep_cfg_conn_track {
+	enum ipa_ipv6ct_en_type conn_track_en;
 };
 
 /**
@@ -384,7 +405,8 @@ struct ipa_ep_cfg_seq {
 
 /**
  * struct ipa_ep_cfg - configuration of IPA end-point
- * @nat:		NAT parmeters
+ * @nat:		NAT parameters
+ * @conn_track:		IPv6CT parameters
  * @hdr:		Header parameters
  * @hdr_ext:		Extended header parameters
  * @mode:		Mode parameters
@@ -398,6 +420,7 @@ struct ipa_ep_cfg_seq {
  */
 struct ipa_ep_cfg {
 	struct ipa_ep_cfg_nat nat;
+	struct ipa_ep_cfg_conn_track conn_track;
 	struct ipa_ep_cfg_hdr hdr;
 	struct ipa_ep_cfg_hdr_ext hdr_ext;
 	struct ipa_ep_cfg_mode mode;
@@ -760,6 +783,7 @@ enum ipa_irq_type {
 	IPA_TX_SUSPEND_IRQ,
 	IPA_TX_HOLB_DROP_IRQ,
 	IPA_BAM_IDLE_IRQ,
+	IPA_BAM_GSI_IDLE_IRQ = IPA_BAM_IDLE_IRQ,
 	IPA_IRQ_MAX
 };
 
@@ -846,6 +870,7 @@ struct IpaHwRingStats_t {
  *		injected due to vdev_id change
  * @num_ic_inj_fw_desc_change : Number of times the Imm Cmd is
  *		injected due to fw_desc change
+ * @num_qmb_int_handled : Number of QMB interrupts handled
 */
 struct IpaHwStatsWDIRxInfoData_t {
 	u32 max_outstanding_pkts;
@@ -859,6 +884,7 @@ struct IpaHwStatsWDIRxInfoData_t {
 	u32 num_pkts_in_dis_uninit_state;
 	u32 num_ic_inj_vdev_change;
 	u32 num_ic_inj_fw_desc_change;
+	u32 num_qmb_int_handled;
 	u32 reserved1;
 	u32 reserved2;
 } __packed;
@@ -1070,6 +1096,16 @@ struct ipa_gsi_ep_config {
 	int ipa_if_tlv;
 	int ipa_if_aos;
 	int ee;
+};
+
+/**
+ * struct ipa_tz_unlock_reg_info - Used in order unlock regions of memory by TZ
+ * @reg_addr - Physical address of the start of the region
+ * @size - Size of the region in bytes
+ */
+struct ipa_tz_unlock_reg_info {
+	u64 reg_addr;
+	u64 size;
 };
 
 #if defined CONFIG_IPA || defined CONFIG_IPA3
@@ -1400,7 +1436,8 @@ struct iommu_domain *ipa_get_smmu_domain(void);
 
 int ipa_disable_apps_wan_cons_deaggr(uint32_t agg_size, uint32_t agg_count);
 
-struct ipa_gsi_ep_config *ipa_get_gsi_ep_info(int ipa_ep_idx);
+const struct ipa_gsi_ep_config *ipa_get_gsi_ep_info
+	(enum ipa_client_type client);
 
 int ipa_stop_gsi_channel(u32 clnt_hdl);
 
@@ -1427,6 +1464,21 @@ typedef void (*ipa_ready_cb)(void *user_data);
 */
 int ipa_register_ipa_ready_cb(void (*ipa_ready_cb)(void *user_data),
 			      void *user_data);
+
+/**
+ * ipa_tz_unlock_reg - Unlocks memory regions so that they become accessible
+ *	from AP.
+ * @reg_info - Pointer to array of memory regions to unlock
+ * @num_regs - Number of elements in the array
+ *
+ * Converts the input array of regions to a struct that TZ understands and
+ * issues an SCM call.
+ * Also flushes the memory cache to DDR in order to make sure that TZ sees the
+ * correct data structure.
+ *
+ * Returns: 0 on success, negative on failure
+ */
+int ipa_tz_unlock_reg(struct ipa_tz_unlock_reg_info *reg_info, u16 num_regs);
 
 #else /* (CONFIG_IPA || CONFIG_IPA3) */
 
@@ -2139,7 +2191,8 @@ static inline int ipa_disable_apps_wan_cons_deaggr(void)
 	return -EINVAL;
 }
 
-static inline struct ipa_gsi_ep_config *ipa_get_gsi_ep_info(int ipa_ep_idx)
+static inline const struct ipa_gsi_ep_config *ipa_get_gsi_ep_info
+	(int ipa_ep_idx)
 {
 	return NULL;
 }
@@ -2152,6 +2205,12 @@ static inline int ipa_stop_gsi_channel(u32 clnt_hdl)
 static inline int ipa_register_ipa_ready_cb(
 	void (*ipa_ready_cb)(void *user_data),
 	void *user_data)
+{
+	return -EPERM;
+}
+
+static inline int ipa_tz_unlock_reg(struct ipa_tz_unlock_reg_info *reg_info,
+	u16 num_regs)
 {
 	return -EPERM;
 }

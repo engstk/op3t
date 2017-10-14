@@ -58,10 +58,11 @@ static bool __read_mostly sysrq_always_enabled;
 unsigned short platform_sysrq_reset_seq[] __weak = { KEY_RESERVED };
 int sysrq_reset_downtime_ms __weak;
 
-static bool sysrq_on(void)
+bool sysrq_on(void)
 {
 	return sysrq_enabled || sysrq_always_enabled;
 }
+EXPORT_SYMBOL(sysrq_on);
 
 /*
  * A value of 1 means 'all', other nonzero values are an op mask:
@@ -953,23 +954,8 @@ static bool sysrq_handler_registered;
 
 static inline void sysrq_register_handler(void)
 {
-	unsigned short key;
 	int error;
-	int i;
 
-	/* First check if a __weak interface was instantiated. */
-	for (i = 0; i < ARRAY_SIZE(sysrq_reset_seq); i++) {
-		key = platform_sysrq_reset_seq[i];
-		if (key == KEY_RESERVED || key > KEY_MAX)
-			break;
-
-		sysrq_reset_seq[sysrq_reset_seq_len++] = key;
-	}
-
-	/*
-	 * DT configuration takes precedence over anything that would
-	 * have been defined via the __weak interface.
-	 */
 	sysrq_of_get_keyreset_config();
 
 	error = input_register_handler(&sysrq_handler);

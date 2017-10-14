@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2016 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015, 2017 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1059,6 +1059,7 @@ static void ipa_mhi_gsi_ev_err_cb(struct gsi_evt_err_notify *notify)
 		IPA_MHI_ERR("Unexpected err evt: %d\n", notify->evt_id);
 	}
 	IPA_MHI_ERR("err_desc=0x%x\n", notify->err_desc);
+	ipa_assert();
 }
 
 static void ipa_mhi_gsi_ch_err_cb(struct gsi_chan_err_notify *notify)
@@ -1090,6 +1091,7 @@ static void ipa_mhi_gsi_ch_err_cb(struct gsi_chan_err_notify *notify)
 		IPA_MHI_ERR("Unexpected err evt: %d\n", notify->evt_id);
 	}
 	IPA_MHI_ERR("err_desc=0x%x\n", notify->err_desc);
+	ipa_assert();
 }
 
 
@@ -2044,6 +2046,8 @@ static int ipa_mhi_suspend_dl(bool force)
 	if (ipa_get_transport_type() == IPA_TRANSPORT_TYPE_GSI)
 		ipa_mhi_update_host_ch_state(true);
 
+	return 0;
+
 fail_stop_event_update_dl_channel:
 		ipa_mhi_resume_channels(true,
 				ipa_mhi_client_ctx->dl_channels);
@@ -2435,6 +2439,7 @@ int ipa_mhi_init(struct ipa_mhi_init_params *params)
 	int res;
 	struct ipa_rm_create_params mhi_prod_params;
 	struct ipa_rm_create_params mhi_cons_params;
+	struct ipa_rm_perf_profile profile;
 
 	IPA_MHI_FUNC_ENTRY();
 
@@ -2506,6 +2511,14 @@ int ipa_mhi_init(struct ipa_mhi_init_params *params)
 		goto fail_create_rm_prod;
 	}
 
+	memset(&profile, 0, sizeof(profile));
+	profile.max_supported_bandwidth_mbps = 1000;
+	res = ipa_rm_set_perf_profile(IPA_RM_RESOURCE_MHI_PROD, &profile);
+	if (res) {
+		IPA_MHI_ERR("fail to set profile to MHI_PROD\n");
+		goto fail_perf_rm_prod;
+	}
+
 	/* Create CONS in IPA RM */
 	memset(&mhi_cons_params, 0, sizeof(mhi_cons_params));
 	mhi_cons_params.name = IPA_RM_RESOURCE_MHI_CONS;
@@ -2516,6 +2529,14 @@ int ipa_mhi_init(struct ipa_mhi_init_params *params)
 	if (res) {
 		IPA_MHI_ERR("fail to create IPA_RM_RESOURCE_MHI_CONS\n");
 		goto fail_create_rm_cons;
+	}
+
+	memset(&profile, 0, sizeof(profile));
+	profile.max_supported_bandwidth_mbps = 1000;
+	res = ipa_rm_set_perf_profile(IPA_RM_RESOURCE_MHI_CONS, &profile);
+	if (res) {
+		IPA_MHI_ERR("fail to set profile to MHI_CONS\n");
+		goto fail_perf_rm_cons;
 	}
 
 	/* Initialize uC interface */
@@ -2530,7 +2551,10 @@ int ipa_mhi_init(struct ipa_mhi_init_params *params)
 	IPA_MHI_FUNC_EXIT();
 	return 0;
 
+fail_perf_rm_cons:
+	ipa_rm_delete_resource(IPA_RM_RESOURCE_MHI_CONS);
 fail_create_rm_cons:
+fail_perf_rm_prod:
 	ipa_rm_delete_resource(IPA_RM_RESOURCE_MHI_PROD);
 fail_create_rm_prod:
 	destroy_workqueue(ipa_mhi_client_ctx->wq);

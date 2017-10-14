@@ -94,7 +94,7 @@
 #define QPNP_WLED_SWITCH_FREQ_800_KHZ	800
 #define QPNP_WLED_SWITCH_FREQ_1600_KHZ	1600
 #define QPNP_WLED_SWITCH_FREQ_OVERWRITE 0x80
-#define QPNP_WLED_OVP_MASK		0xFC
+#define QPNP_WLED_OVP_MASK		GENMASK(1, 0)
 #define QPNP_WLED_OVP_17800_MV		17800
 #define QPNP_WLED_OVP_19400_MV		19400
 #define QPNP_WLED_OVP_29500_MV		29500
@@ -683,9 +683,9 @@ static ssize_t qpnp_wled_dim_mode_store(struct device *dev,
 	if (snprintf(str, QPNP_WLED_STR_SIZE, "%s", buf) > QPNP_WLED_STR_SIZE)
 		return -EINVAL;
 
-	if (strcmp(str, "analog") == 0)
+	if (strcmp(str, "analog\n") == 0)
 		temp = QPNP_WLED_DIM_ANALOG;
-	else if (strcmp(str, "digital") == 0)
+	else if (strcmp(str, "digital\n") == 0)
 		temp = QPNP_WLED_DIM_DIGITAL;
 	else
 		temp = QPNP_WLED_DIM_HYBRID;
@@ -1100,31 +1100,28 @@ static int qpnp_wled_config(struct qpnp_wled *wled)
 	if (rc)
 		return rc;
 
-	/* Configure the OVP register */
-	if (wled->ovp_mv <= QPNP_WLED_OVP_17800_MV) {
-		wled->ovp_mv = QPNP_WLED_OVP_17800_MV;
-		temp = 3;
-	} else if (wled->ovp_mv <= QPNP_WLED_OVP_19400_MV) {
-		wled->ovp_mv = QPNP_WLED_OVP_19400_MV;
-		temp = 2;
-	} else if (wled->ovp_mv <= QPNP_WLED_OVP_29500_MV) {
-		wled->ovp_mv = QPNP_WLED_OVP_29500_MV;
-		temp = 1;
-	} else {
-		wled->ovp_mv = QPNP_WLED_OVP_31000_MV;
-		temp = 0;
-	}
+	/* Configure the OVP register only if display type is not AMOLED */
+	if (!wled->disp_type_amoled) {
+		if (wled->ovp_mv <= QPNP_WLED_OVP_17800_MV) {
+			wled->ovp_mv = QPNP_WLED_OVP_17800_MV;
+			temp = 3;
+		} else if (wled->ovp_mv <= QPNP_WLED_OVP_19400_MV) {
+			wled->ovp_mv = QPNP_WLED_OVP_19400_MV;
+			temp = 2;
+		} else if (wled->ovp_mv <= QPNP_WLED_OVP_29500_MV) {
+			wled->ovp_mv = QPNP_WLED_OVP_29500_MV;
+			temp = 1;
+		} else {
+			wled->ovp_mv = QPNP_WLED_OVP_31000_MV;
+			temp = 0;
+		}
 
-	rc = qpnp_wled_read_reg(wled, &reg,
-			QPNP_WLED_OVP_REG(wled->ctrl_base));
-	if (rc < 0)
-		return rc;
-	reg &= QPNP_WLED_OVP_MASK;
-	reg |= temp;
-	rc = qpnp_wled_write_reg(wled, &reg,
-			QPNP_WLED_OVP_REG(wled->ctrl_base));
-	if (rc)
-		return rc;
+		reg = (u8)temp;
+		rc = qpnp_wled_masked_write_reg(wled, QPNP_WLED_OVP_MASK, &reg,
+				QPNP_WLED_OVP_REG(wled->ctrl_base));
+		if (rc)
+			return rc;
+	}
 
 	rc = qpnp_wled_read_reg(wled, &reg,
 			QPNP_WLED_CTRL_SPARE_REG(wled->ctrl_base));
@@ -1150,8 +1147,8 @@ static int qpnp_wled_config(struct qpnp_wled *wled)
 
 		/* Update WLED_OVP register based on desired target voltage */
 		reg = qpnp_wled_ovp_reg_settings[i];
-		rc = qpnp_wled_write_reg(wled, &reg,
-			QPNP_WLED_OVP_REG(wled->ctrl_base));
+		rc = qpnp_wled_masked_write_reg(wled, QPNP_WLED_OVP_MASK, &reg,
+				QPNP_WLED_OVP_REG(wled->ctrl_base));
 		if (rc)
 			return rc;
 
@@ -1574,7 +1571,7 @@ static int qpnp_wled_parse_dt(struct qpnp_wled *wled)
 	if (!rc) {
 		wled->ovp_mv = temp_val;
 	} else if (rc != -EINVAL) {
-		dev_err(&spmi->dev, "Unable to read vref\n");
+		dev_err(&spmi->dev, "Unable to read ovp\n");
 		return rc;
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -46,6 +46,7 @@
 #define SMEM_IMAGE_VERSION_OEM_OFFSET 96
 #define SMEM_IMAGE_VERSION_PARTITION_APPS 10
 
+static DECLARE_RWSEM(current_image_rwsem);
 enum {
 	HW_PLATFORM_UNKNOWN = 0,
 	HW_PLATFORM_SURF    = 1,
@@ -556,19 +557,27 @@ static struct msm_soc_info cpu_of_id[] = {
 	[293] = {MSM_CPU_8953, "MSM8953"},
 	[304] = {MSM_CPU_8953, "APQ8053"},
 
+	/* SDM450 ID */
+	[338] = {MSM_CPU_SDM450, "SDM450"},
+
 	/* 9607 IDs */
 	[290] = {MSM_CPU_9607, "MDM9607"},
 	[296] = {MSM_CPU_9607, "MDM8207"},
 	[297] = {MSM_CPU_9607, "MDM9207"},
 	[298] = {MSM_CPU_9607, "MDM9307"},
 	[299] = {MSM_CPU_9607, "MDM9628"},
+	[322] = {MSM_CPU_9607, "MDM9206"},
 
-	/* Californium IDs */
-	[279] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[283] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[284] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[285] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
-	[286] = {MSM_CPU_CALIFORNIUM, "MDMCALIFORNIUM"},
+	/* 9650 IDs */
+	[279] = {MSM_CPU_9650, "MDM9650"},
+	[283] = {MSM_CPU_9650, "MDM9650"},
+	[284] = {MSM_CPU_9650, "MDM9650"},
+	[285] = {MSM_CPU_9650, "MDM9650"},
+	[286] = {MSM_CPU_9650, "MDM9650"},
+
+	/* SDX20 IDs */
+	[314] = {SDX_CPU_20, "SDX20"},
+	[333] = {SDX_CPU_20, "SDX20"},
 
 	/*MSM8937 ID  */
 	[294] = {MSM_CPU_8937, "MSM8937"},
@@ -948,7 +957,9 @@ msm_get_image_version(struct device *dev,
 		pr_err("Failed to get image version base address");
 		return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "Unknown");
 	}
+	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	return snprintf(buf, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.75s\n",
 			string_address);
 }
@@ -961,14 +972,19 @@ msm_set_image_version(struct device *dev,
 {
 	char *store_address;
 
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
+	down_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
+		up_read(&current_image_rwsem);
 		return count;
+	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
+		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	snprintf(store_address, SMEM_IMAGE_VERSION_NAME_SIZE, "%-.75s", buf);
 	return count;
 }
@@ -986,7 +1002,9 @@ msm_get_image_variant(struct device *dev,
 		return snprintf(buf, SMEM_IMAGE_VERSION_VARIANT_SIZE,
 		"Unknown");
 	}
+	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	string_address += SMEM_IMAGE_VERSION_VARIANT_OFFSET;
 	return snprintf(buf, SMEM_IMAGE_VERSION_VARIANT_SIZE, "%-.20s\n",
 			string_address);
@@ -1000,14 +1018,19 @@ msm_set_image_variant(struct device *dev,
 {
 	char *store_address;
 
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
+	down_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
+		up_read(&current_image_rwsem);
 		return count;
+	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
+		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	store_address += SMEM_IMAGE_VERSION_VARIANT_OFFSET;
 	snprintf(store_address, SMEM_IMAGE_VERSION_VARIANT_SIZE, "%-.20s", buf);
 	return count;
@@ -1025,7 +1048,9 @@ msm_get_image_crm_version(struct device *dev,
 		pr_err("Failed to get image version base address");
 		return snprintf(buf, SMEM_IMAGE_VERSION_OEM_SIZE, "Unknown");
 	}
+	down_read(&current_image_rwsem);
 	string_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	string_address += SMEM_IMAGE_VERSION_OEM_OFFSET;
 	return snprintf(buf, SMEM_IMAGE_VERSION_OEM_SIZE, "%-.32s\n",
 			string_address);
@@ -1039,14 +1064,19 @@ msm_set_image_crm_version(struct device *dev,
 {
 	char *store_address;
 
-	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS)
+	down_read(&current_image_rwsem);
+	if (current_image != SMEM_IMAGE_VERSION_PARTITION_APPS) {
+		up_read(&current_image_rwsem);
 		return count;
+	}
 	store_address = socinfo_get_image_version_base_address();
 	if (IS_ERR_OR_NULL(store_address)) {
 		pr_err("Failed to get image version base address");
+		up_read(&current_image_rwsem);
 		return count;
 	}
 	store_address += current_image * SMEM_IMAGE_VERSION_SINGLE_BLOCK_SIZE;
+	up_read(&current_image_rwsem);
 	store_address += SMEM_IMAGE_VERSION_OEM_OFFSET;
 	snprintf(store_address, SMEM_IMAGE_VERSION_OEM_SIZE, "%-.32s", buf);
 	return count;
@@ -1057,8 +1087,14 @@ msm_get_image_number(struct device *dev,
 			struct device_attribute *attr,
 			char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%d\n",
+	int ret;
+
+	down_read(&current_image_rwsem);
+	ret = snprintf(buf, PAGE_SIZE, "%d\n",
 			current_image);
+	up_read(&current_image_rwsem);
+	return ret;
+
 }
 
 static ssize_t
@@ -1070,10 +1106,12 @@ msm_select_image(struct device *dev, struct device_attribute *attr,
 	ret = kstrtoint(buf, 10, &digit);
 	if (ret)
 		return ret;
+	down_write(&current_image_rwsem);
 	if (0 <= digit && digit < SMEM_IMAGE_VERSION_BLOCKS_COUNT)
 		current_image = digit;
 	else
 		current_image = 0;
+	up_write(&current_image_rwsem);
 	return count;
 }
 
@@ -1223,9 +1261,13 @@ static void * __init setup_dummy_socinfo(void)
 		dummy_socinfo.id = 238;
 		strlcpy(dummy_socinfo.build_id, "mdm9640 - ",
 			sizeof(dummy_socinfo.build_id));
-	} else if (early_machine_is_mdmcalifornium()) {
+	} else if (early_machine_is_mdm9650()) {
 		dummy_socinfo.id = 286;
-		strlcpy(dummy_socinfo.build_id, "mdmcalifornium - ",
+		strlcpy(dummy_socinfo.build_id, "mdm9650 - ",
+			sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sdx20()) {
+		dummy_socinfo.id = 314;
+		strlcpy(dummy_socinfo.build_id, "sdx20 - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_msm8994()) {
 		dummy_socinfo.id = 207;
@@ -1254,6 +1296,10 @@ static void * __init setup_dummy_socinfo(void)
 	} else if (early_machine_is_msm8953()) {
 		dummy_socinfo.id = 293;
 		strlcpy(dummy_socinfo.build_id, "msm8953 - ",
+			sizeof(dummy_socinfo.build_id));
+	} else if (early_machine_is_sdm450()) {
+		dummy_socinfo.id = 338;
+		strlcpy(dummy_socinfo.build_id, "sdm450 - ",
 			sizeof(dummy_socinfo.build_id));
 	} else if (early_machine_is_mdm9607()) {
 		dummy_socinfo.id = 290;

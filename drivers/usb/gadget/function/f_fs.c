@@ -711,14 +711,17 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 {
 	struct ffs_epfile *epfile = file->private_data;
 	struct ffs_ep *ep;
+	struct ffs_data *ffs = epfile->ffs;
 	char *data = NULL;
 	ssize_t ret, data_len = -EINVAL;
 	int halt;
 	size_t extra_buf_alloc = 0;
+	bool first_read = false;
 
 	pr_debug("%s: len %zu, read %d\n", __func__, io_data->len,
 			io_data->read);
 
+retry:
 	if (atomic_read(&epfile->error))
 		return -ENODEV;
 
@@ -752,6 +755,11 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			if (ret < 0)
 				goto error;
 		}
+		/*
+		 * set if function eps are not enabled for the first
+		 * epfile_read
+		 */
+		first_read = true;
 		if (!ep) {
 			ret = -ENODEV;
 			goto error;
@@ -941,6 +949,28 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					ret = ep->status;
 				else
 					ret = -ENODEV;
+
+				/* do wait again if func eps are not enabled */
+				if (io_data->read && first_read && (ret < 0)) {
+					unsigned short count = ffs->eps_count;
+					pr_debug("%s: waiting for the online state\n",
+						 __func__);
+					ret = 0;
+					kfree(data);
+					data = NULL;
+					data_len = -EINVAL;
+					spin_unlock_irq(&epfile->ffs->eps_lock);
+					mutex_unlock(&epfile->mutex);
+					epfile = ffs->epfiles;
+					do {
+						atomic_set(&epfile->error, 0);
+						++epfile;
+					} while (--count);
+					epfile = file->private_data;
+					first_read = false;
+					goto retry;
+				}
+
 				spin_unlock_irq(&epfile->ffs->eps_lock);
 
 				if (io_data->read && ret > 0) {
@@ -1578,14 +1608,14 @@ static void ffs_data_clear(struct ffs_data *ffs)
 {
 	ENTER();
 
-	pr_debug("%s: ffs->gadget= %p, ffs->flags= %lu\n", __func__,
+	pr_debug("%s: ffs->gadget= %pK, ffs->flags= %lu\n", __func__,
 			ffs->gadget, ffs->flags);
 
 	ffs_closed(ffs);
 
 	/* Dump ffs->gadget and ffs->flags */
 	if (ffs->gadget)
-		pr_err("%s: ffs:%p ffs->gadget= %p, ffs->flags= %lu\n",
+		pr_err("%s: ffs:%pK ffs->gadget= %pK, ffs->flags= %lu\n",
 				__func__, ffs, ffs->gadget, ffs->flags);
 	BUG_ON(ffs->gadget);
 

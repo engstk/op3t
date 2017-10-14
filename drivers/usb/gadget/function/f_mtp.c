@@ -519,7 +519,7 @@ static int mtp_create_bulk_endpoints(struct mtp_dev *dev,
 	size_t extra_buf_alloc = cdev->gadget->extra_buf_alloc;
 	int i;
 
-	DBG(cdev, "create_bulk_endpoints dev: %p\n", dev);
+	DBG(cdev, "create_bulk_endpoints dev: %pK\n", dev);
 
 	ep = usb_ep_autoconfig(cdev->gadget, in_desc);
 	if (!ep) {
@@ -654,7 +654,7 @@ requeue_req:
 		r = -EIO;
 		goto done;
 	} else {
-		DBG(cdev, "rx %p queue\n", req);
+		DBG(cdev, "rx %pK queue\n", req);
 	}
 
 	/* wait for a request to complete */
@@ -679,7 +679,7 @@ requeue_req:
 		if (req->actual == 0)
 			goto requeue_req;
 
-		DBG(cdev, "rx %p %d\n", req, req->actual);
+		DBG(cdev, "rx %pK %d\n", req, req->actual);
 		xfer = (req->actual < count) ? req->actual : count;
 		r = xfer;
 		if (copy_to_user(buf, req->buf, xfer))
@@ -959,7 +959,7 @@ static void receive_file_work(struct work_struct *data)
 		}
 
 		if (write_req) {
-			DBG(cdev, "rx %p %d\n", write_req, write_req->actual);
+			DBG(cdev, "rx %pK %d\n", write_req, write_req->actual);
 			start_time = ktime_get();
 			ret = vfs_write(filp, write_req->buf, write_req->actual,
 				&offset);
@@ -1393,7 +1393,7 @@ mtp_function_bind(struct usb_configuration *c, struct usb_function *f)
 	int			ret;
 
 	dev->cdev = cdev;
-	DBG(cdev, "mtp_function_bind dev: %p\n", dev);
+	DBG(cdev, "mtp_function_bind dev: %pK\n", dev);
 
 	/* allocate interface ID(s) */
 	id = usb_interface_id(c, f);
@@ -1588,7 +1588,7 @@ static int debug_mtp_read_stats(struct seq_file *s, void *unused)
 	}
 
 	seq_printf(s, "vfs_write(time in usec) min:%d\t max:%d\t avg:%d\n",
-						min, max, sum / iteration);
+				min, max, (iteration ? (sum / iteration) : 0));
 	min = max = sum = iteration = 0;
 	seq_puts(s, "\n=======================\n");
 	seq_puts(s, "MTP Read Stats:\n");
@@ -1610,7 +1610,7 @@ static int debug_mtp_read_stats(struct seq_file *s, void *unused)
 	}
 
 	seq_printf(s, "vfs_read(time in usec) min:%d\t max:%d\t avg:%d\n",
-						min, max, sum / iteration);
+				min, max, (iteration ? (sum / iteration) : 0));
 	spin_unlock_irqrestore(&dev->lock, flags);
 	return 0;
 }
@@ -1618,18 +1618,27 @@ static int debug_mtp_read_stats(struct seq_file *s, void *unused)
 static ssize_t debug_mtp_reset_stats(struct file *file, const char __user *buf,
 				 size_t count, loff_t *ppos)
 {
-	int clear_stats;
+	int ret;
 	unsigned long flags;
+	u8 clear_stats;
 	struct mtp_dev *dev = _mtp_dev;
 
 	if (buf == NULL) {
 		pr_err("[%s] EINVAL\n", __func__);
-		goto done;
+		ret = -EINVAL;
+		return ret;
 	}
 
-	if (sscanf(buf, "%u", &clear_stats) != 1 || clear_stats != 0) {
+	ret = kstrtou8_from_user(buf, count, 0, &clear_stats);
+	if (ret < 0) {
+		pr_err("can't get enter value.\n");
+		return ret;
+	}
+
+	if (clear_stats != 0) {
 		pr_err("Wrong value. To clear stats, enter value as 0.\n");
-		goto done;
+		ret = -EINVAL;
+		return ret;
 	}
 
 	spin_lock_irqsave(&dev->lock, flags);
@@ -1637,7 +1646,7 @@ static ssize_t debug_mtp_reset_stats(struct file *file, const char __user *buf,
 	dev->dbg_read_index = 0;
 	dev->dbg_write_index = 0;
 	spin_unlock_irqrestore(&dev->lock, flags);
-done:
+
 	return count;
 }
 

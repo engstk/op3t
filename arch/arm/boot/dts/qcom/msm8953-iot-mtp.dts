@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,5 +38,30 @@
 			regulator-max-microvolt = <3300000>;
 			qcom,init-voltage = <2700000>;
 		};
+	};
+};
+
+&modem_mem {
+	reg = <0x0 0x86c00000 0x0 0x1e00000>;
+};
+
+&adsp_fw_mem {
+	reg = <0x0 0x88a00000 0x0 0x1100000>;
+};
+
+&wcnss_fw_mem {
+	reg = <0x0 0x89b00000 0x0 0x700000>;
+};
+
+&soc {
+	hbtp {
+		status = "disabled";
+	};
+};
+
+&gpio_key_suspend {
+	config {
+		/delete-property/ bias-pull-up;
+		bias-pull-down;
 	};
 };

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -29,6 +29,7 @@
 
 static struct dentry *dent;
 static char dbg_buff[4096];
+static void *gsi_ipc_logbuf_low;
 
 static void gsi_wq_print_dp_stats(struct work_struct *work);
 static DECLARE_DELAYED_WORK(gsi_print_dp_stats_work, gsi_wq_print_dp_stats);
@@ -71,7 +72,7 @@ static ssize_t gsi_dump_evt(struct file *file,
 
 	TDBG("arg1=%u arg2=%u\n", arg1, arg2);
 
-	if (arg1 >= GSI_MAX_EVT_RING) {
+	if (arg1 >= gsi_ctx->max_ev) {
 		TERR("invalid evt ring id %u\n", arg1);
 		return -EFAULT;
 	}
@@ -184,7 +185,7 @@ static ssize_t gsi_dump_ch(struct file *file,
 
 	TDBG("arg1=%u arg2=%u\n", arg1, arg2);
 
-	if (arg1 >= GSI_MAX_CHAN) {
+	if (arg1 >= gsi_ctx->max_ch) {
 		TERR("invalid chan id %u\n", arg1);
 		return -EFAULT;
 	}
@@ -271,9 +272,30 @@ static ssize_t gsi_dump_ee(struct file *file,
 	val = gsi_readl(gsi_ctx->base +
 		GSI_EE_n_GSI_STATUS_OFFS(gsi_ctx->per.ee));
 	TERR("EE%2d STATUS 0x%x\n", gsi_ctx->per.ee, val);
-	val = gsi_readl(gsi_ctx->base +
-		GSI_EE_n_GSI_HW_PARAM_OFFS(gsi_ctx->per.ee));
-	TERR("EE%2d HW_PARAM 0x%x\n", gsi_ctx->per.ee, val);
+	if (gsi_ctx->per.ver == GSI_VER_1_0) {
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_0_EE_n_GSI_HW_PARAM_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM 0x%x\n", gsi_ctx->per.ee, val);
+	} else if (gsi_ctx->per.ver == GSI_VER_1_2) {
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_2_EE_n_GSI_HW_PARAM_0_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM_0 0x%x\n", gsi_ctx->per.ee, val);
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_2_EE_n_GSI_HW_PARAM_1_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM_1 0x%x\n", gsi_ctx->per.ee, val);
+	} else if (gsi_ctx->per.ver == GSI_VER_1_3) {
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_3_EE_n_GSI_HW_PARAM_0_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM_0 0x%x\n", gsi_ctx->per.ee, val);
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_3_EE_n_GSI_HW_PARAM_1_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM_1 0x%x\n", gsi_ctx->per.ee, val);
+		val = gsi_readl(gsi_ctx->base +
+			GSI_V1_3_EE_n_GSI_HW_PARAM_2_OFFS(gsi_ctx->per.ee));
+		TERR("EE%2d HW_PARAM_2 0x%x\n", gsi_ctx->per.ee, val);
+	} else {
+		WARN_ON(1);
+	}
 	val = gsi_readl(gsi_ctx->base +
 		GSI_EE_n_GSI_SW_VERSION_OFFS(gsi_ctx->per.ee));
 	TERR("EE%2d SW_VERSION 0x%x\n", gsi_ctx->per.ee, val);
@@ -329,7 +351,7 @@ static ssize_t gsi_dump_map(struct file *file,
 	int i;
 
 	TERR("EVT bitmap 0x%lx\n", gsi_ctx->evt_bmap);
-	for (i = 0; i < GSI_MAX_CHAN; i++) {
+	for (i = 0; i < gsi_ctx->max_ch; i++) {
 		ctx = &gsi_ctx->chan[i];
 
 		if (ctx->allocated) {
@@ -402,8 +424,8 @@ static ssize_t gsi_dump_stats(struct file *file,
 
 	if (ch_id == -1) {
 		min = 0;
-		max = GSI_MAX_CHAN;
-	} else if (ch_id < 0 || ch_id >= GSI_MAX_CHAN ||
+		max = gsi_ctx->max_ch;
+	} else if (ch_id < 0 || ch_id >= gsi_ctx->max_ch ||
 		   !gsi_ctx->chan[ch_id].allocated) {
 		goto error;
 	} else {
@@ -464,13 +486,8 @@ static ssize_t gsi_enable_dp_stats(struct file *file,
 	if (kstrtos32(dbg_buff + 1, 0, &ch_id))
 		goto error;
 
-	if (ch_id < 0 || ch_id >= GSI_MAX_CHAN ||
+	if (ch_id < 0 || ch_id >= gsi_ctx->max_ch ||
 	    !gsi_ctx->chan[ch_id].allocated) {
-		goto error;
-	}
-
-	if (gsi_ctx->chan[ch_id].props.prot == GSI_CHAN_PROT_GPI) {
-		TERR("valid for non GPI channels only\n");
 		goto error;
 	}
 
@@ -540,7 +557,7 @@ static ssize_t gsi_set_max_elem_dp_stats(struct file *file,
 		/* get */
 		if (kstrtou32(dbg_buff, 0, &ch_id))
 			goto error;
-		if (ch_id >= GSI_MAX_CHAN)
+		if (ch_id >= gsi_ctx->max_ch)
 			goto error;
 		PRT_STAT("ch %d: max_re_expected=%d\n", ch_id,
 			gsi_ctx->chan[ch_id].props.max_re_expected);
@@ -553,7 +570,7 @@ static ssize_t gsi_set_max_elem_dp_stats(struct file *file,
 
 	TDBG("ch_id=%u max_elem=%u\n", ch_id, max_elem);
 
-	if (ch_id >= GSI_MAX_CHAN) {
+	if (ch_id >= gsi_ctx->max_ch) {
 		TERR("invalid chan id %u\n", ch_id);
 		goto error;
 	}
@@ -572,7 +589,7 @@ static void gsi_wq_print_dp_stats(struct work_struct *work)
 {
 	int ch_id;
 
-	for (ch_id = 0; ch_id < GSI_MAX_CHAN; ch_id++) {
+	for (ch_id = 0; ch_id < gsi_ctx->max_ch; ch_id++) {
 		if (gsi_ctx->chan[ch_id].print_dp_stats)
 			gsi_dump_ch_stats(&gsi_ctx->chan[ch_id]);
 	}
@@ -610,7 +627,7 @@ static void gsi_dbg_update_ch_dp_stats(struct gsi_chan_ctx *ctx)
 	else
 		used_hw = ctx->ring.max_num_elem + 1 - (start_hw - end_hw);
 
-	TERR("ch %d used %d\n", ctx->props.ch_id, used_hw);
+	TDBG("ch %d used %d\n", ctx->props.ch_id, used_hw);
 	gsi_update_ch_dp_stats(ctx, used_hw);
 }
 
@@ -618,9 +635,8 @@ static void gsi_wq_update_dp_stats(struct work_struct *work)
 {
 	int ch_id;
 
-	for (ch_id = 0; ch_id < GSI_MAX_CHAN; ch_id++) {
+	for (ch_id = 0; ch_id < gsi_ctx->max_ch; ch_id++) {
 		if (gsi_ctx->chan[ch_id].allocated &&
-		    gsi_ctx->chan[ch_id].props.prot != GSI_CHAN_PROT_GPI &&
 		    gsi_ctx->chan[ch_id].enable_dp_stats)
 			gsi_dbg_update_ch_dp_stats(&gsi_ctx->chan[ch_id]);
 	}
@@ -649,8 +665,8 @@ static ssize_t gsi_rst_stats(struct file *file,
 
 	if (ch_id == -1) {
 		min = 0;
-		max = GSI_MAX_CHAN;
-	} else if (ch_id < 0 || ch_id >= GSI_MAX_CHAN ||
+		max = gsi_ctx->max_ch;
+	} else if (ch_id < 0 || ch_id >= gsi_ctx->max_ch ||
 		   !gsi_ctx->chan[ch_id].allocated) {
 		goto error;
 	} else {
@@ -691,7 +707,7 @@ static ssize_t gsi_print_dp_stats(struct file *file,
 	if (kstrtos32(dbg_buff + 1, 0, &ch_id))
 		goto error;
 
-	if (ch_id < 0 || ch_id >= GSI_MAX_CHAN ||
+	if (ch_id < 0 || ch_id >= gsi_ctx->max_ch ||
 	    !gsi_ctx->chan[ch_id].allocated) {
 		goto error;
 	}
@@ -725,6 +741,43 @@ error:
 	TERR("Usage: echo [+-]ch_id > print_dp_stats\n");
 	return -EFAULT;
 }
+
+static ssize_t gsi_enable_ipc_low(struct file *file,
+	const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	unsigned long missing;
+	s8 option = 0;
+
+	if (sizeof(dbg_buff) < count + 1)
+		return -EFAULT;
+
+	missing = copy_from_user(dbg_buff, ubuf, count);
+	if (missing)
+		return -EFAULT;
+
+	dbg_buff[count] = '\0';
+	if (kstrtos8(dbg_buff, 0, &option))
+		return -EFAULT;
+
+	mutex_lock(&gsi_ctx->mlock);
+	if (option) {
+		if (!gsi_ipc_logbuf_low) {
+			gsi_ipc_logbuf_low =
+				ipc_log_context_create(GSI_IPC_LOG_PAGES,
+					"gsi_low", 0);
+			if (gsi_ipc_logbuf_low == NULL)
+				TERR("failed to get ipc_logbuf_low\n");
+		}
+		gsi_ctx->ipc_logbuf_low = gsi_ipc_logbuf_low;
+	} else {
+		gsi_ctx->ipc_logbuf_low = NULL;
+	}
+	mutex_unlock(&gsi_ctx->mlock);
+
+	return count;
+}
+
+
 
 const struct file_operations gsi_ev_dump_ops = {
 	.write = gsi_dump_evt,
@@ -760,6 +813,10 @@ const struct file_operations gsi_rst_stats_ops = {
 
 const struct file_operations gsi_print_dp_stats_ops = {
 	.write = gsi_print_dp_stats,
+};
+
+const struct file_operations gsi_ipc_low_ops = {
+	.write = gsi_enable_ipc_low,
 };
 
 void gsi_debugfs_init(void)
@@ -834,6 +891,13 @@ void gsi_debugfs_init(void)
 		write_only_mode, dent, 0, &gsi_print_dp_stats_ops);
 	if (!dfile || IS_ERR(dfile)) {
 		TERR("fail to create stats file\n");
+		goto fail;
+	}
+
+	dfile = debugfs_create_file("ipc_low", write_only_mode,
+		dent, 0, &gsi_ipc_low_ops);
+	if (!dfile || IS_ERR(dfile)) {
+		TERR("could not create ipc_low\n");
 		goto fail;
 	}
 

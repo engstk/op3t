@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,6 +26,7 @@
 #include "adreno_iommu.h"
 #include "adreno_pm4types.h"
 #include "adreno_ringbuffer.h"
+#include "adreno_trace.h"
 
 #include "a3xx_reg.h"
 #include "adreno_a5xx.h"
@@ -64,6 +65,7 @@ static void _cff_write_ringbuffer(struct adreno_ringbuffer *rb)
 }
 
 static void adreno_get_submit_time(struct adreno_device *adreno_dev,
+		struct adreno_ringbuffer *rb,
 		struct adreno_submit_time *time)
 {
 	unsigned long flags;
@@ -92,6 +94,9 @@ static void adreno_get_submit_time(struct adreno_device *adreno_dev,
 				time->ticks &= 0xFFFFFFFF;
 	} else
 		time->ticks = 0;
+
+	/* Trace the GPU time to create a mapping to ftrace time */
+	trace_adreno_cmdbatch_sync(rb->drawctxt_active, time->ticks);
 
 	/* Get the kernel clock for time since boot */
 	time->ktime = local_clock();
@@ -134,7 +139,7 @@ void adreno_ringbuffer_submit(struct adreno_ringbuffer *rb,
 	_cff_write_ringbuffer(rb);
 
 	if (time != NULL)
-		adreno_get_submit_time(adreno_dev, time);
+		adreno_get_submit_time(adreno_dev, rb, time);
 
 	adreno_ringbuffer_wptr(adreno_dev, rb);
 }
@@ -1042,6 +1047,7 @@ int adreno_ringbuffer_submitcmd(struct adreno_device *adreno_dev,
 					cmdbatch->timestamp, time);
 
 	if (!ret) {
+		set_bit(KGSL_CONTEXT_PRIV_SUBMITTED, &context->priv);
 		cmdbatch->global_ts = drawctxt->internal_timestamp;
 
 		/* Put the timevalues in the profiling buffer */

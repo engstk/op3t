@@ -2,7 +2,7 @@
  * drivers/mmc/host/sdhci-msm.c - Qualcomm MSM SDHCI Platform
  * driver source file
  *
- * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -223,6 +223,9 @@ static struct sdhci_msm_host *sdhci_slot[2];
 static int disable_slots;
 /* root can write, others read */
 module_param(disable_slots, int, S_IRUGO|S_IWUSR);
+
+static bool nocmdq;
+module_param(nocmdq, bool, S_IRUGO|S_IWUSR);
 
 enum vdd_io_level {
 	/* set vdd_io_data->low_vol_level */
@@ -958,6 +961,7 @@ int sdhci_msm_execute_tuning(struct sdhci_host *host, u32 opcode)
 	bool drv_type_changed = false;
 	struct mmc_card *card = host->mmc->card;
 	int sts_retry;
+	u8 last_good_phase = 0;
 
 	/*
 	 * Tuning is required for SDR104, HS200 and HS400 cards and
@@ -1043,6 +1047,22 @@ retry:
 		mmc_wait_for_req(mmc, &mrq);
 
 		if (card && (cmd.error || data.error)) {
+			/*
+			 * Set the dll to last known good phase while sending
+			 * status command to ensure that status command won't
+			 * fail due to bad phase.
+			 */
+			if (tuned_phase_cnt)
+				last_good_phase =
+					tuned_phases[tuned_phase_cnt-1];
+			else if (msm_host->saved_tuning_phase !=
+					INVALID_TUNING_PHASE)
+				last_good_phase = msm_host->saved_tuning_phase;
+
+			rc = msm_config_cm_dll_phase(host, last_good_phase);
+			if (rc)
+				goto kfree;
+
 			sts_cmd.opcode = MMC_SEND_STATUS;
 			sts_cmd.arg = card->rca << 16;
 			sts_cmd.flags = MMC_RSP_R1 | MMC_CMD_AC;
@@ -1777,7 +1797,7 @@ struct sdhci_msm_pltfm_data *sdhci_msm_populate_pdata(struct device *dev,
 	sdhci_msm_pm_qos_parse(dev, pdata);
 
 	if (of_get_property(np, "qcom,core_3_0v_support", NULL))
-		pdata->core_3_0v_support = true;
+		msm_host->core_3_0v_support = true;
 
 	return pdata;
 out:
@@ -2181,21 +2201,6 @@ out:
 	return ret;
 }
 
-/*
- * Reset vreg by ensuring it is off during probe. A call
- * to enable vreg is needed to balance disable vreg
- */
-static int sdhci_msm_vreg_reset(struct sdhci_msm_pltfm_data *pdata)
-{
-	int ret;
-
-	ret = sdhci_msm_setup_vreg(pdata, 1, true);
-	if (ret)
-		return ret;
-	ret = sdhci_msm_setup_vreg(pdata, 0, true);
-	return ret;
-}
-
 /* This init function should be called only once for each SDHC slot */
 static int sdhci_msm_vreg_init(struct device *dev,
 				struct sdhci_msm_pltfm_data *pdata,
@@ -2230,7 +2235,7 @@ static int sdhci_msm_vreg_init(struct device *dev,
 		if (ret)
 			goto vdd_reg_deinit;
 	}
-	ret = sdhci_msm_vreg_reset(pdata);
+
 	if (ret)
 		dev_err(dev, "vreg reset failed (%d)\n", ret);
 	goto out;
@@ -2396,7 +2401,9 @@ static irqreturn_t sdhci_msm_pwr_irq(int irq, void *data)
 		io_level = REQ_IO_HIGH;
 	}
 	if (irq_status & CORE_PWRCTL_BUS_OFF) {
-		ret = sdhci_msm_setup_vreg(msm_host->pdata, false, false);
+		if (msm_host->pltfm_init_done)
+			ret = sdhci_msm_setup_vreg(msm_host->pdata,
+					false, false);
 		if (!ret) {
 			ret = sdhci_msm_setup_pins(msm_host->pdata, false);
 			ret |= sdhci_msm_set_vdd_io_vol(msm_host->pdata,
@@ -2442,7 +2449,9 @@ static irqreturn_t sdhci_msm_pwr_irq(int irq, void *data)
 	 */
 	mb();
 
-	if ((io_level & REQ_IO_HIGH) && (msm_host->caps_0 & CORE_3_0V_SUPPORT))
+	if ((io_level & REQ_IO_HIGH) &&
+			(msm_host->caps_0 & CORE_3_0V_SUPPORT) &&
+			!msm_host->core_3_0v_support)
 		writel_relaxed((readl_relaxed(host->ioaddr + CORE_VENDOR_SPEC) &
 				~CORE_IO_PAD_PWR_SWITCH),
 				host->ioaddr + CORE_VENDOR_SPEC);
@@ -3737,6 +3746,19 @@ static void sdhci_msm_init(struct sdhci_host *host)
 				msm_host->pdata->pm_qos_data.latency);
 }
 
+static unsigned int sdhci_msm_get_current_limit(struct sdhci_host *host)
+{
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+	struct sdhci_msm_slot_reg_data *curr_slot = msm_host->pdata->vreg_data;
+	u32 max_curr = 0;
+
+	if (curr_slot && curr_slot->vdd_data)
+		max_curr = curr_slot->vdd_data->hpm_uA;
+
+	return max_curr;
+}
+
 static struct sdhci_ops sdhci_msm_ops = {
 	.crypto_engine_cfg = sdhci_msm_ice_cfg,
 	.crypto_cfg_reset = sdhci_msm_ice_cfg_reset,
@@ -3762,6 +3784,7 @@ static struct sdhci_ops sdhci_msm_ops = {
 	.init = sdhci_msm_init,
 	.pre_req = sdhci_msm_pre_req,
 	.post_req = sdhci_msm_post_req,
+	.get_current_limit = sdhci_msm_get_current_limit,
 };
 
 static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
@@ -3839,7 +3862,7 @@ static void sdhci_set_default_hw_caps(struct sdhci_msm_host *msm_host,
 		msm_host->use_14lpp_dll = true;
 
 	/* Fake 3.0V support for SDIO devices which requires such voltage */
-	if (msm_host->pdata->core_3_0v_support) {
+	if (msm_host->core_3_0v_support) {
 		caps |= CORE_3_0V_SUPPORT;
 			writel_relaxed(
 			(readl_relaxed(host->ioaddr + SDHCI_CAPABILITIES) |
@@ -3866,6 +3889,11 @@ static void sdhci_msm_cmdq_init(struct sdhci_host *host,
 {
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
 	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+
+	if (nocmdq) {
+		dev_dbg(&pdev->dev, "CMDQ disabled via cmdline\n");
+		return;
+	}
 
 	host->cq_host = cmdq_pltfm_init(pdev);
 	if (IS_ERR(host->cq_host)) {
@@ -4341,6 +4369,8 @@ static int sdhci_msm_probe(struct platform_device *pdev)
 		goto free_cd_gpio;
 	}
 
+	msm_host->pltfm_init_done = true;
+
 	pm_runtime_set_active(&pdev->dev);
 	pm_runtime_enable(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, MSM_AUTOSUSPEND_DELAY_MS);
@@ -4661,7 +4691,7 @@ static int sdhci_msm_suspend_noirq(struct device *dev)
 }
 
 static const struct dev_pm_ops sdhci_msm_pmops = {
-	SET_SYSTEM_SLEEP_PM_OPS(sdhci_msm_suspend, sdhci_msm_resume)
+	SET_LATE_SYSTEM_SLEEP_PM_OPS(sdhci_msm_suspend, sdhci_msm_resume)
 	SET_RUNTIME_PM_OPS(sdhci_msm_runtime_suspend, sdhci_msm_runtime_resume,
 			   NULL)
 	.suspend_noirq = sdhci_msm_suspend_noirq,
@@ -4684,6 +4714,7 @@ static struct platform_driver sdhci_msm_driver = {
 	.driver		= {
 		.name	= "sdhci_msm",
 		.owner	= THIS_MODULE,
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 		.of_match_table = sdhci_msm_dt_match,
 		.pm	= SDHCI_MSM_PMOPS,
 	},

@@ -421,6 +421,7 @@ struct ufs_clk_gating {
 	struct device_attribute enable_attr;
 	bool is_enabled;
 	int active_reqs;
+	struct workqueue_struct *ungating_workq;
 };
 
 /* Hibern8 state  */
@@ -887,6 +888,9 @@ struct ufs_hba {
 	bool no_ref_clk_gating;
 
 	int scsi_block_reqs_cnt;
+
+	int			latency_hist_enabled;
+	struct io_latency_state io_lat_s;
 };
 
 /* Returns true if clocks can be gated. Otherwise false */

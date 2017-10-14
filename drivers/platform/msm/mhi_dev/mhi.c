@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -28,19 +28,17 @@
 #include <linux/msm_ep_pcie.h>
 #include <linux/ipa_mhi.h>
 #include <linux/vmalloc.h>
+#include <linux/wakelock.h>
 
 #include "mhi.h"
 #include "mhi_hwio.h"
 #include "mhi_sm.h"
 
 /* Wait time on the device for Host to set M0 state */
-#define MHI_M0_WAIT_MIN_USLEEP		20000000
-#define MHI_M0_WAIT_MAX_USLEEP		25000000
 #define MHI_DEV_M0_MAX_CNT		30
 /* Wait time before suspend/resume is complete */
-#define MHI_SUSPEND_WAIT_MIN		3100
-#define MHI_SUSPEND_WAIT_MAX		3200
-#define MHI_SUSPEND_WAIT_TIMEOUT	500
+#define MHI_SUSPEND_MIN			10000
+#define MHI_SUSPEND_TIMEOUT		3000
 #define MHI_MASK_CH_EV_LEN		32
 #define MHI_RING_CMD_ID			0
 #define MHI_RING_PRIMARY_EVT_ID		1
@@ -59,6 +57,8 @@
 #define HOST_ADDR_MSB(addr)		((addr >> 32) & 0xFFFFFFFF)
 
 #define MHI_IPC_LOG_PAGES		(100)
+#define MHI_REGLEN			0x100
+
 enum mhi_msg_level mhi_msg_lvl = MHI_MSG_ERROR;
 enum mhi_msg_level mhi_ipc_msg_lvl = MHI_MSG_VERBOSE;
 void *mhi_ipc_log;
@@ -68,43 +68,70 @@ static void mhi_hwc_cb(void *priv, enum ipa_mhi_event_type event,
 	unsigned long data);
 static void mhi_ring_init_cb(void *user_data);
 
-void mhi_dev_read_from_host(struct mhi_addr *host, dma_addr_t dev, size_t size)
+void mhi_dev_read_from_host(struct mhi_dev *mhi, struct mhi_addr *transfer)
 {
 	int rc = 0;
-	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0;
-
-	host_addr_pa = ((u64) host->host_pa) | bit_40;
-
-	mhi_log(MHI_MSG_ERROR, "device 0x%x <<-- host 0x%llx, size %d\n",
-		dev, host_addr_pa, size);
-
-	rc = ipa_dma_sync_memcpy((u64) dev, host_addr_pa, (int) size);
-	if (rc)
-		pr_err("error while reading from host:%d\n", rc);
-}
-EXPORT_SYMBOL(mhi_dev_read_from_host);
-
-void mhi_dev_write_to_host(struct mhi_addr *host, void *dev, size_t size,
-						struct mhi_dev *mhi)
-{
-	int rc = 0;
-	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0;
+	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0, offset = 0;
 
 	if (!mhi) {
 		pr_err("invalid MHI ctx\n");
 		return;
 	}
 
-	host_addr_pa = ((u64) host->host_pa) | bit_40;
-	/* Copy the device content to a local device physical address */
-	memcpy(mhi->dma_cache, dev, size);
-	mhi_log(MHI_MSG_ERROR, "device 0x%llx --> host 0x%llx, size %d\n",
-		(uint64_t) mhi->cache_dma_handle, host_addr_pa, (int) size);
+	if (mhi->config_iatu) {
+		offset = (uint64_t)transfer->host_pa - mhi->ctrl_base.host_pa;
+		/* Mapping the translated physical address on the device */
+		host_addr_pa = (uint64_t) mhi->ctrl_base.device_pa + offset;
+	} else {
+		host_addr_pa = transfer->host_pa | bit_40;
+	}
 
-	rc = ipa_dma_sync_memcpy(host_addr_pa, (u64) mhi->cache_dma_handle,
-								(int) size);
-	if (rc)
-		pr_err("error while reading from host:%d\n", rc);
+	if (mhi->use_ipa) {
+		mhi_log(MHI_MSG_VERBOSE,
+			"device 0x%x <<-- host 0x%llx, size %d\n",
+			transfer->phy_addr, host_addr_pa,
+			(int) transfer->size);
+
+		rc = ipa_dma_sync_memcpy((u64) transfer->phy_addr,
+					host_addr_pa, (int) transfer->size);
+		if (rc)
+			pr_err("error while reading from host:%d\n", rc);
+	}
+}
+EXPORT_SYMBOL(mhi_dev_read_from_host);
+
+void mhi_dev_write_to_host(struct mhi_dev *mhi,
+				struct mhi_addr *transfer)
+{
+	int rc = 0;
+	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0, offset = 0;
+
+	if (!mhi) {
+		pr_err("invalid MHI ctx\n");
+		return;
+	}
+
+	if (mhi->config_iatu) {
+		offset = (uint64_t) transfer->host_pa - mhi->ctrl_base.host_pa;
+		/* Mapping the translated physical address on the device */
+		host_addr_pa = (uint64_t) mhi->ctrl_base.device_pa + offset;
+	} else {
+		host_addr_pa = transfer->host_pa | bit_40;
+	}
+
+	if (mhi->use_ipa) {
+		/* Copy the device content to a local device physical address */
+		memcpy(mhi->dma_cache, transfer->virt_addr, transfer->size);
+		mhi_log(MHI_MSG_VERBOSE,
+			"device 0x%llx --> host 0x%llx, size %d\n",
+			(uint64_t) mhi->cache_dma_handle, host_addr_pa,
+			(int) transfer->size);
+
+		rc = ipa_dma_sync_memcpy(host_addr_pa,
+			(u64) mhi->cache_dma_handle, (int) transfer->size);
+		if (rc)
+			pr_err("error while reading from host:%d\n", rc);
+	}
 }
 EXPORT_SYMBOL(mhi_dev_write_to_host);
 
@@ -112,7 +139,7 @@ int mhi_transfer_host_to_device(void *dev, uint64_t host_pa, uint32_t len,
 							struct mhi_dev *mhi)
 {
 	int rc = 0;
-	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0;
+	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0, offset = 0;
 
 	if (!mhi) {
 		pr_err("Invalid mhi device\n");
@@ -129,8 +156,15 @@ int mhi_transfer_host_to_device(void *dev, uint64_t host_pa, uint32_t len,
 		return -EINVAL;
 	}
 
-	host_addr_pa = host_pa | bit_40;
-	mhi_log(MHI_MSG_ERROR, "device 0x%llx <-- host 0x%llx, size %d\n",
+	if (mhi->config_iatu) {
+		offset = (uint64_t)host_pa - mhi->data_base.host_pa;
+		/* Mapping the translated physical address on the device */
+		host_addr_pa = (uint64_t) mhi->data_base.device_pa + offset;
+	} else {
+		host_addr_pa = host_pa | bit_40;
+	}
+
+	mhi_log(MHI_MSG_VERBOSE, "device 0x%llx <-- host 0x%llx, size %d\n",
 		(uint64_t) mhi->read_dma_handle, host_addr_pa, (int) len);
 	rc = ipa_dma_sync_memcpy((u64) mhi->read_dma_handle,
 			host_addr_pa, (int) len);
@@ -149,17 +183,24 @@ int mhi_transfer_device_to_host(uint64_t host_addr, void *dev, uint32_t len,
 						struct mhi_dev *mhi)
 {
 	int rc = 0;
-	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0;
+	uint64_t bit_40 = ((u64) 1) << 40, host_addr_pa = 0, offset = 0;
 
 	if (!mhi || !dev || !host_addr) {
 		pr_err("%sInvalid parameters\n", __func__);
 		return -EINVAL;
 	}
 
-	host_addr_pa = host_addr | bit_40;
+	if (mhi->config_iatu) {
+		offset = (uint64_t)host_addr - mhi->data_base.host_pa;
+		/* Mapping the translated physical address on the device */
+		host_addr_pa = (uint64_t) mhi->data_base.device_pa + offset;
+	} else {
+		host_addr_pa = host_addr | bit_40;
+	}
+
 	memcpy(mhi->write_handle, dev, len);
 
-	mhi_log(MHI_MSG_ERROR, "device 0x%llx ---> host 0x%llx, size %d\n",
+	mhi_log(MHI_MSG_VERBOSE, "device 0x%llx ---> host 0x%llx, size %d\n",
 		(uint64_t) mhi->write_dma_handle, host_addr_pa, (int) len);
 	rc = ipa_dma_sync_memcpy(host_addr_pa,
 			(u64) mhi->write_dma_handle,
@@ -216,7 +257,7 @@ int mhi_pcie_config_db_routing(struct mhi_dev *mhi)
 
 	mhi_dev_get_erdb_db_cfg(mhi, &erdb_cfg);
 
-	mhi_log(MHI_MSG_ERROR,
+	mhi_log(MHI_MSG_VERBOSE,
 		"Event rings 0x%x => er_base 0x%x, er_end %d\n",
 		mhi->cfg.event_rings, erdb_cfg.base, erdb_cfg.end);
 	erdb_cfg.tgt_addr = (uint32_t) mhi->ipa_uc_mbox_erdb;
@@ -247,7 +288,7 @@ static int mhi_hwc_init(struct mhi_dev *mhi)
 	}
 
 	mhi_dev_get_erdb_db_cfg(mhi, &erdb_cfg);
-	mhi_log(MHI_MSG_ERROR,
+	mhi_log(MHI_MSG_VERBOSE,
 		"Event rings 0x%x => er_base 0x%x, er_end %d\n",
 		mhi->cfg.event_rings, erdb_cfg.base, erdb_cfg.end);
 
@@ -259,10 +300,18 @@ static int mhi_hwc_init(struct mhi_dev *mhi)
 	ipa_init_params.msi.mask = ((1 << cfg.msg_num) - 1);
 	ipa_init_params.first_er_idx = erdb_cfg.base;
 	ipa_init_params.first_ch_idx = HW_CHANNEL_BASE;
-	ipa_init_params.mmio_addr = ((uint32_t) mhi_ctx->mmio_base_pa_addr);
-	ipa_init_params.assert_bit40 = true;
 
-	mhi_log(MHI_MSG_ERROR,
+	if (mhi_ctx->config_iatu)
+		ipa_init_params.mmio_addr =
+			((uint32_t) mhi_ctx->mmio_base_pa_addr) + MHI_REGLEN;
+	else
+		ipa_init_params.mmio_addr =
+			((uint32_t) mhi_ctx->mmio_base_pa_addr);
+
+	if (!mhi_ctx->config_iatu)
+		ipa_init_params.assert_bit40 = true;
+
+	mhi_log(MHI_MSG_VERBOSE,
 		"MMIO Addr 0x%x, MSI config: U:0x%x L: 0x%x D: 0x%x\n",
 		ipa_init_params.mmio_addr, cfg.upper, cfg.lower, cfg.data);
 	ipa_init_params.notify = mhi_hwc_cb;
@@ -284,10 +333,15 @@ static int mhi_hwc_start(struct mhi_dev *mhi)
 
 	memset(&ipa_start_params, 0, sizeof(ipa_start_params));
 
-	ipa_start_params.channel_context_array_addr =
+	if (mhi->config_iatu) {
+		ipa_start_params.host_ctrl_addr = mhi->ctrl_base.device_pa;
+		ipa_start_params.host_data_addr = mhi->data_base.device_pa;
+	} else {
+		ipa_start_params.channel_context_array_addr =
 				mhi->ch_ctx_shadow.host_pa;
-	ipa_start_params.event_context_array_addr =
+		ipa_start_params.event_context_array_addr =
 				mhi->ev_ctx_shadow.host_pa;
+	}
 
 	rc = ipa_mhi_start(&ipa_start_params);
 	if (rc)
@@ -303,7 +357,7 @@ static void mhi_hwc_cb(void *priv, enum ipa_mhi_event_type event,
 
 	switch (event) {
 	case IPA_MHI_EVENT_READY:
-		mhi_log(MHI_MSG_ERROR,
+		mhi_log(MHI_MSG_INFO,
 			"HW Channel uC is ready event=0x%X\n", event);
 		rc = mhi_hwc_start(mhi_ctx);
 		if (rc) {
@@ -352,6 +406,7 @@ static int mhi_hwc_chcmd(struct mhi_dev *mhi, uint chid,
 	memset(&connect_params, 0, sizeof(connect_params));
 
 	switch (type) {
+	case MHI_DEV_RING_EL_RESET:
 	case MHI_DEV_RING_EL_STOP:
 		rc = ipa_mhi_disconnect_pipe(
 			mhi->ipa_clnt_hndl[chid-HW_CHANNEL_BASE]);
@@ -402,15 +457,18 @@ static void mhi_dev_core_ack_ctrl_interrupts(struct mhi_dev *dev,
 
 static void mhi_dev_fetch_ch_ctx(struct mhi_dev *mhi, uint32_t ch_id)
 {
-	struct mhi_addr addr;
+	struct mhi_addr data_transfer;
 
-	addr.host_pa = mhi->ch_ctx_shadow.host_pa +
+	if (mhi->use_ipa) {
+		data_transfer.host_pa = mhi->ch_ctx_shadow.host_pa +
 					sizeof(struct mhi_dev_ch_ctx) * ch_id;
-	addr.size  = sizeof(struct mhi_dev_ch_ctx);
+		data_transfer.phy_addr = mhi->ch_ctx_cache_dma_handle +
+					sizeof(struct mhi_dev_ch_ctx) * ch_id;
+	}
+
+	data_transfer.size  = sizeof(struct mhi_dev_ch_ctx);
 	/* Fetch the channel ctx (*dst, *src, size) */
-	mhi_dev_read_from_host(&addr, mhi->ch_ctx_cache_dma_handle +
-					(sizeof(struct mhi_dev_ch_ctx) * ch_id),
-				sizeof(struct mhi_dev_ch_ctx));
+	mhi_dev_read_from_host(mhi, &data_transfer);
 }
 
 int mhi_dev_syserr(struct mhi_dev *mhi)
@@ -437,23 +495,23 @@ int mhi_dev_send_event(struct mhi_dev *mhi, int evnt_ring,
 	union mhi_dev_ring_ctx *ctx;
 	struct ep_pcie_msi_config cfg;
 	struct mhi_addr msi_addr;
-	uint32_t msi = 0;
-	struct mhi_addr host_rp_addr;
+	struct mhi_addr transfer_addr;
+	uint32_t data_buffer = 0;
 
-	rc = ep_pcie_get_msi_config(mhi->phandle,
-			&cfg);
-		if (rc) {
-			pr_err("Error retrieving pcie msi logic\n");
-			return rc;
-		}
+	memset(&msi_addr, 0, sizeof(msi_addr));
+	rc = ep_pcie_get_msi_config(mhi->phandle, &cfg);
+	if (rc) {
+		pr_err("Error retrieving pcie msi logic\n");
+		return rc;
+	}
 
 	if (evnt_ring_idx > mhi->cfg.event_rings) {
 		pr_err("Invalid event ring idx: %lld\n", evnt_ring_idx);
 		return -EINVAL;
 	}
 
-	if (RING_STATE_UINT == mhi_ring_get_state(ring)) {
-		ctx = (union mhi_dev_ring_ctx *)&mhi->ev_ctx_cache[evnt_ring];
+	ctx = (union mhi_dev_ring_ctx *)&mhi->ev_ctx_cache[evnt_ring];
+	if (mhi_ring_get_state(ring) == RING_STATE_UINT) {
 		rc = mhi_ring_start(ring, ctx, mhi);
 		if (rc) {
 			mhi_log(MHI_MSG_ERROR,
@@ -470,17 +528,24 @@ int mhi_dev_send_event(struct mhi_dev *mhi, int evnt_ring,
 				sizeof(union mhi_dev_ring_element_type)) +
 				ring->ring_ctx->generic.rbase;
 
-	mhi_log(MHI_MSG_ERROR, "ev.rp = %llx for %lld\n",
+	mhi_log(MHI_MSG_VERBOSE, "ev.rp = %llx for %lld\n",
 				ring->ring_ctx_shadow->ev.rp, evnt_ring_idx);
 
-	host_rp_addr.host_pa = (mhi->ev_ctx_shadow.host_pa +
+	if (mhi->use_ipa)
+		transfer_addr.host_pa = (mhi->ev_ctx_shadow.host_pa +
 			sizeof(struct mhi_dev_ev_ctx) *
 			evnt_ring) + (uint32_t) &ring->ring_ctx->ev.rp -
 			(uint32_t) ring->ring_ctx;
-	mhi_dev_write_to_host(&host_rp_addr, &ring->ring_ctx_shadow->ev.rp,
-						sizeof(uint64_t),
-						mhi);
+	else
+		transfer_addr.device_va = (mhi->ev_ctx_shadow.device_va +
+			sizeof(struct mhi_dev_ev_ctx) *
+			evnt_ring) + (uint32_t) &ring->ring_ctx->ev.rp -
+			(uint32_t) ring->ring_ctx;
 
+	transfer_addr.virt_addr = &ring->ring_ctx_shadow->ev.rp;
+	transfer_addr.size = sizeof(uint64_t);
+
+	mhi_dev_write_to_host(mhi, &transfer_addr);
 	/*
 	 * rp update in host memory should be flushed
 	 * before sending a MSI to the host
@@ -488,26 +553,30 @@ int mhi_dev_send_event(struct mhi_dev *mhi, int evnt_ring,
 	wmb();
 
 	mutex_unlock(&mhi->mhi_event_lock);
-	mhi_log(MHI_MSG_ERROR, "event sent:\n");
-	mhi_log(MHI_MSG_ERROR, "evnt ptr : 0x%llx\n", el->evt_tr_comp.ptr);
-	mhi_log(MHI_MSG_ERROR, "evnt len : 0x%x\n", el->evt_tr_comp.len);
-	mhi_log(MHI_MSG_ERROR, "evnt code :0x%x\n", el->evt_tr_comp.code);
-	mhi_log(MHI_MSG_ERROR, "evnt type :0x%x\n", el->evt_tr_comp.type);
-	mhi_log(MHI_MSG_ERROR, "evnt chid :0x%x\n", el->evt_tr_comp.chid);
+	mhi_log(MHI_MSG_VERBOSE, "event sent:\n");
+	mhi_log(MHI_MSG_VERBOSE, "evnt ptr : 0x%llx\n", el->evt_tr_comp.ptr);
+	mhi_log(MHI_MSG_VERBOSE, "evnt len : 0x%x\n", el->evt_tr_comp.len);
+	mhi_log(MHI_MSG_VERBOSE, "evnt code :0x%x\n", el->evt_tr_comp.code);
+	mhi_log(MHI_MSG_VERBOSE, "evnt type :0x%x\n", el->evt_tr_comp.type);
+	mhi_log(MHI_MSG_VERBOSE, "evnt chid :0x%x\n", el->evt_tr_comp.chid);
 
-	msi_addr.host_pa = (uint64_t)((uint64_t)cfg.upper << 32) |
+	if (mhi->use_ipa)
+		msi_addr.host_pa = (uint64_t)((uint64_t)cfg.upper << 32) |
 						(uint64_t)cfg.lower;
-	msi = cfg.data + mhi_ctx->mhi_ep_msi_num;
-	mhi_log(MHI_MSG_ERROR, "Sending MSI %d to 0x%llx as data = 0x%x\n",
-			mhi_ctx->mhi_ep_msi_num, msi_addr.host_pa, msi);
-	mhi_dev_write_to_host(&msi_addr, &msi, 4, mhi);
-	/*
-	rc = ep_pcie_trigger_msi(mhi_ctx->phandle, mhi_ctx->mhi_ep_msi_num);
+	else
+		msi_addr.device_va = (uintptr_t)((uint64_t)cfg.upper << 32) |
+						(uint64_t)cfg.lower;
+
+	data_buffer = cfg.data + mhi_ctx->mhi_ep_msi_num + ctx->ev.msivec;
+	msi_addr.virt_addr = &data_buffer;
+	msi_addr.size = 4;
+	mhi_log(MHI_MSG_VERBOSE, "Sending MSI %d to 0x%llx as data = 0x%x\n",
+			ctx->ev.msivec, msi_addr.host_pa, data_buffer);
+	rc = ep_pcie_trigger_msi(mhi_ctx->phandle, ctx->ev.msivec);
 	if (rc) {
 		pr_err("%s: error sending msi\n", __func__);
 		return rc;
 	}
-	*/
 	return rc;
 }
 
@@ -597,7 +666,7 @@ static int mhi_dev_send_cmd_comp_event(struct mhi_dev *mhi)
 	event.evt_cmd_comp.ptr = mhi->cmd_ctx_cache->rbase
 			+ (mhi->ring[MHI_RING_CMD_ID].rd_offset *
 			(sizeof(union mhi_dev_ring_element_type)));
-	mhi_log(MHI_MSG_ERROR, "evt cmd comp ptr :%d\n",
+	mhi_log(MHI_MSG_VERBOSE, "evt cmd comp ptr :%d\n",
 			(uint32_t) event.evt_cmd_comp.ptr);
 	event.evt_cmd_comp.type = MHI_DEV_RING_EL_CMD_COMPLETION_EVT;
 	event.evt_cmd_comp.code = MHI_CMD_COMPL_CODE_SUCCESS;
@@ -613,7 +682,7 @@ static int mhi_dev_process_stop_cmd(struct mhi_dev_ring *ring, uint32_t ch_id,
 							struct mhi_dev *mhi)
 {
 	int rc = 0;
-	struct mhi_addr host_addr;
+	struct mhi_addr data_transfer;
 
 	if (ring->rd_offset != ring->wr_offset &&
 		mhi->ch_ctx_cache[ch_id].ch_type ==
@@ -629,11 +698,20 @@ static int mhi_dev_process_stop_cmd(struct mhi_dev_ring *ring, uint32_t ch_id,
 	/* set the channel to stop */
 	mhi->ch_ctx_cache[ch_id].ch_state = MHI_DEV_CH_STATE_STOP;
 
-	host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
+	if (mhi->use_ipa) {
+		data_transfer.host_pa = mhi->ch_ctx_shadow.host_pa +
 				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+	} else {
+		data_transfer.device_va = mhi->ch_ctx_shadow.device_va +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		data_transfer.device_pa = mhi->ch_ctx_shadow.device_pa +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+	}
+	data_transfer.size = sizeof(enum mhi_dev_ch_ctx_state);
+	data_transfer.virt_addr = &mhi->ch_ctx_cache[ch_id].ch_state;
+
 	/* update the channel state in the host */
-	mhi_dev_write_to_host(&host_addr, &mhi->ch_ctx_cache[ch_id].ch_state,
-				sizeof(enum mhi_dev_ch_ctx_state), mhi);
+	mhi_dev_write_to_host(mhi, &data_transfer);
 
 	/* send the completion event to the host */
 	rc = mhi_dev_send_cmd_comp_event(mhi);
@@ -651,13 +729,13 @@ static void mhi_dev_process_cmd_ring(struct mhi_dev *mhi,
 	union mhi_dev_ring_element_type event;
 	struct mhi_addr host_addr;
 
-	mhi_log(MHI_MSG_ERROR, "for channel:%d and cmd:%d\n",
-		ch_id, el->generic.type);
 	ch_id = el->generic.chid;
+	mhi_log(MHI_MSG_VERBOSE, "for channel:%d and cmd:%d\n",
+		ch_id, el->generic.type);
 
 	switch (el->generic.type) {
 	case MHI_DEV_RING_EL_START:
-		mhi_log(MHI_MSG_ERROR, "recived start cmd for channel %d\n",
+		mhi_log(MHI_MSG_VERBOSE, "recived start cmd for channel %d\n",
 								ch_id);
 		if (ch_id >= (HW_CHANNEL_BASE)) {
 			rc = mhi_hwc_chcmd(mhi, ch_id, el->generic.type);
@@ -697,11 +775,17 @@ static void mhi_dev_process_cmd_ring(struct mhi_dev *mhi,
 			return;
 		}
 
-		host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
+		if (mhi->use_ipa)
+			host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
 					sizeof(struct mhi_dev_ch_ctx) * ch_id;
-		mhi_dev_write_to_host(&host_addr,
-					&mhi->ch_ctx_cache[ch_id].ch_state,
-					sizeof(enum mhi_dev_ch_ctx_state), mhi);
+		else
+			host_addr.device_va = mhi->ch_ctx_shadow.device_va +
+					sizeof(struct mhi_dev_ch_ctx) * ch_id;
+
+		host_addr.virt_addr = &mhi->ch_ctx_cache[ch_id].ch_state;
+		host_addr.size = sizeof(enum mhi_dev_ch_ctx_state);
+
+		mhi_dev_write_to_host(mhi, &host_addr);
 
 send_start_completion_event:
 		rc = mhi_dev_send_cmd_comp_event(mhi);
@@ -755,20 +839,64 @@ send_start_completion_event:
 		}
 		break;
 	case MHI_DEV_RING_EL_RESET:
-		/* hard stop and set the channel to stop */
-		mhi->ch_ctx_cache[ch_id].ch_state = MHI_DEV_CH_STATE_STOP;
-		host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
-				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		mhi_log(MHI_MSG_VERBOSE,
+			"received reset cmd for channel %d\n", ch_id);
+		if (ch_id >= HW_CHANNEL_BASE) {
+			rc = mhi_hwc_chcmd(mhi, ch_id, el->generic.type);
+			if (rc) {
+				mhi_log(MHI_MSG_ERROR,
+					"send channel stop cmd event failed\n");
+				return;
+			}
 
-		/* update the channel state in the host */
-		mhi_dev_write_to_host(&host_addr,
-				&mhi->ch_ctx_cache[ch_id].ch_state,
-				sizeof(enum mhi_dev_ch_ctx_state), mhi);
+			/* send the completion event to the host */
+			event.evt_cmd_comp.ptr = mhi->cmd_ctx_cache->rbase +
+				(mhi->ring[MHI_RING_CMD_ID].rd_offset *
+				(sizeof(union mhi_dev_ring_element_type)));
+			event.evt_cmd_comp.type =
+					MHI_DEV_RING_EL_CMD_COMPLETION_EVT;
+			if (rc == 0)
+				event.evt_cmd_comp.code =
+					MHI_CMD_COMPL_CODE_SUCCESS;
+			else
+				event.evt_cmd_comp.code =
+					MHI_CMD_COMPL_CODE_UNDEFINED;
 
-		/* send the completion event to the host */
-		rc = mhi_dev_send_cmd_comp_event(mhi);
-		if (rc)
-			pr_err("Error sending command completion event\n");
+			rc = mhi_dev_send_event(mhi, 0, &event);
+			if (rc) {
+				pr_err("stop event send failed\n");
+				return;
+			}
+		} else {
+
+			mhi_log(MHI_MSG_VERBOSE,
+					"received reset cmd for channel %d\n",
+					ch_id);
+
+			/* hard stop and set the channel to stop */
+			mhi->ch_ctx_cache[ch_id].ch_state =
+						MHI_DEV_CH_STATE_STOP;
+			if (mhi->use_ipa)
+				host_addr.host_pa =
+					mhi->ch_ctx_shadow.host_pa +
+					(sizeof(struct mhi_dev_ch_ctx) * ch_id);
+			else
+				host_addr.device_va =
+					mhi->ch_ctx_shadow.device_va +
+					(sizeof(struct mhi_dev_ch_ctx) * ch_id);
+
+			host_addr.virt_addr =
+					&mhi->ch_ctx_cache[ch_id].ch_state;
+			host_addr.size = sizeof(enum mhi_dev_ch_ctx_state);
+
+			/* update the channel state in the host */
+			mhi_dev_write_to_host(mhi, &host_addr);
+
+			/* send the completion event to the host */
+			rc = mhi_dev_send_cmd_comp_event(mhi);
+			if (rc)
+				pr_err("Error sending command completion event\n");
+		}
 		break;
 	default:
 		pr_err("%s: Invalid command:%d\n", __func__, el->generic.type);
@@ -784,7 +912,7 @@ static void mhi_dev_process_tre_ring(struct mhi_dev *mhi,
 	struct mhi_dev_client_cb_reason reason;
 
 	if (ring->id < mhi->ch_ring_start) {
-		mhi_log(MHI_MSG_ERROR,
+		mhi_log(MHI_MSG_VERBOSE,
 			"invalid channel ring id (%d), should be < %d\n",
 			ring->id, mhi->ch_ring_start);
 		return;
@@ -822,7 +950,7 @@ static void mhi_dev_process_ring_pending(struct work_struct *work)
 	list_for_each_safe(cp, q, &mhi->process_ring_list) {
 		ring = list_entry(cp, struct mhi_dev_ring, list);
 		list_del(cp);
-		mhi_log(MHI_MSG_ERROR, "processing ring %d\n", ring->id);
+		mhi_log(MHI_MSG_VERBOSE, "processing ring %d\n", ring->id);
 		rc = mhi_dev_process_ring(ring);
 		if (rc) {
 			mhi_log(MHI_MSG_ERROR,
@@ -885,7 +1013,7 @@ static void mhi_dev_queue_channel_db(struct mhi_dev *mhi,
 		if (chintr_value & 1) {
 			ring = &mhi->ring[ch_num + mhi->ch_ring_start];
 			if (ring->state == RING_STATE_UINT) {
-				pr_err("Channel not opened for %d\n", ch_num);
+				pr_debug("Channel not opened for %d\n", ch_num);
 				break;
 			}
 			mhi_ring_set_state(ring, RING_STATE_PENDING);
@@ -913,9 +1041,10 @@ static void mhi_dev_check_channel_interrupt(struct mhi_dev *mhi)
 
 	for (i = 0; i < MHI_MASK_ROWS_CH_EV_DB; i++) {
 		ch_num = i * MHI_MASK_CH_EV_LEN;
-		chintr_value = mhi->chdb[i].status;
+		/* Process channel status whose mask is enabled */
+		chintr_value = (mhi->chdb[i].status & mhi->chdb[i].mask);
 		if (chintr_value) {
-			mhi_log(MHI_MSG_ERROR,
+			mhi_log(MHI_MSG_VERBOSE,
 				"processing id: %d, ch interrupt 0x%x\n",
 							i, chintr_value);
 			mhi_dev_queue_channel_db(mhi, chintr_value, ch_num);
@@ -944,7 +1073,7 @@ static void mhi_dev_scheduler(struct work_struct *work)
 	mhi_dev_core_ack_ctrl_interrupts(mhi, &int_value);
 
 	if (int_value & MHI_MMIO_CTRL_INT_STATUS_A7_MSK) {
-		mhi_log(MHI_MSG_ERROR,
+		mhi_log(MHI_MSG_VERBOSE,
 			"processing ctrl interrupt with %d\n", int_value);
 		rc = mhi_dev_mmio_get_mhi_state(mhi, &state);
 		if (rc) {
@@ -969,7 +1098,7 @@ static void mhi_dev_scheduler(struct work_struct *work)
 	}
 
 	if (int_value & MHI_MMIO_CTRL_CRDB_STATUS_MSK) {
-		mhi_log(MHI_MSG_ERROR,
+		mhi_log(MHI_MSG_VERBOSE,
 			"processing cmd db interrupt with %d\n", int_value);
 		ring = &mhi->ring[MHI_RING_CMD_ID];
 		ring->state = RING_STATE_PENDING;
@@ -980,19 +1109,65 @@ static void mhi_dev_scheduler(struct work_struct *work)
 	mhi_dev_check_channel_interrupt(mhi);
 
 	mutex_unlock(&mhi_ctx->mhi_lock);
-	ep_pcie_mask_irq_event(mhi->phandle,
+
+	if (mhi->config_iatu)
+		enable_irq(mhi->mhi_irq);
+	else
+		ep_pcie_mask_irq_event(mhi->phandle,
 				EP_PCIE_INT_EVT_MHI_A7, true);
 }
 
 void mhi_dev_notify_a7_event(struct mhi_dev *mhi)
 {
+
+	if (!atomic_read(&mhi->mhi_dev_wake)) {
+		pm_stay_awake(mhi->dev);
+		atomic_set(&mhi->mhi_dev_wake, 1);
+	}
+	mhi_log(MHI_MSG_VERBOSE, "acquiring mhi wakelock\n");
+
 	schedule_work(&mhi->chdb_ctrl_work);
-	mhi_log(MHI_MSG_ERROR, "mhi irq triggered\n");
+	mhi_log(MHI_MSG_VERBOSE, "mhi irq triggered\n");
 }
 EXPORT_SYMBOL(mhi_dev_notify_a7_event);
 
+static irqreturn_t mhi_dev_isr(int irq, void *dev_id)
+{
+	struct mhi_dev *mhi = dev_id;
+
+	disable_irq_nosync(mhi->mhi_irq);
+	schedule_work(&mhi->chdb_ctrl_work);
+	mhi_log(MHI_MSG_VERBOSE, "mhi irq triggered\n");
+
+	return IRQ_HANDLED;
+}
+
 int mhi_dev_config_outbound_iatu(struct mhi_dev *mhi)
 {
+	struct ep_pcie_iatu control, data;
+	int rc = 0;
+	struct ep_pcie_iatu entries[MHI_HOST_REGION_NUM];
+
+	data.start = mhi->data_base.device_pa;
+	data.end = mhi->data_base.device_pa + mhi->data_base.size - 1;
+	data.tgt_lower = HOST_ADDR_LSB(mhi->data_base.host_pa);
+	data.tgt_upper = HOST_ADDR_MSB(mhi->data_base.host_pa);
+
+	control.start = mhi->ctrl_base.device_pa;
+	control.end = mhi->ctrl_base.device_pa + mhi->ctrl_base.size - 1;
+	control.tgt_lower = HOST_ADDR_LSB(mhi->ctrl_base.host_pa);
+	control.tgt_upper = HOST_ADDR_MSB(mhi->ctrl_base.host_pa);
+
+	entries[0] = data;
+	entries[1] = control;
+
+	rc = ep_pcie_config_outbound_iatu(mhi_ctx->phandle, entries,
+					MHI_HOST_REGION_NUM);
+	if (rc) {
+		pr_err("error configure iATU\n");
+		return rc;
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(mhi_dev_config_outbound_iatu);
@@ -1002,6 +1177,7 @@ static int mhi_dev_cache_host_cfg(struct mhi_dev *mhi)
 	int rc = 0;
 	struct platform_device *pdev;
 	uint64_t addr1 = 0;
+	struct mhi_addr data_transfer;
 
 	pdev = mhi->pdev;
 
@@ -1019,6 +1195,37 @@ static int mhi_dev_cache_host_cfg(struct mhi_dev *mhi)
 	addr1 = HOST_ADDR(mhi->host_addr.data_limit_lsb,
 					mhi->host_addr.data_limit_msb);
 	mhi->data_base.size = addr1 - mhi->data_base.host_pa;
+
+	if (mhi->config_iatu) {
+		if (mhi->ctrl_base.host_pa > mhi->data_base.host_pa) {
+			mhi->data_base.device_pa = mhi->device_local_pa_base;
+			mhi->ctrl_base.device_pa = mhi->device_local_pa_base +
+				mhi->ctrl_base.host_pa - mhi->data_base.host_pa;
+		} else {
+			mhi->ctrl_base.device_pa = mhi->device_local_pa_base;
+			mhi->data_base.device_pa = mhi->device_local_pa_base +
+				mhi->data_base.host_pa - mhi->ctrl_base.host_pa;
+		}
+
+		if (!mhi->use_ipa) {
+			mhi->ctrl_base.device_va =
+				(uintptr_t) devm_ioremap_nocache(&pdev->dev,
+				mhi->ctrl_base.device_pa,
+				mhi->ctrl_base.size);
+			if (!mhi->ctrl_base.device_va) {
+				pr_err("io remap failed for mhi address\n");
+				return -EINVAL;
+			}
+		}
+	}
+
+	if (mhi->config_iatu) {
+		rc = mhi_dev_config_outbound_iatu(mhi);
+		if (rc) {
+			pr_err("Configuring iATU failed\n");
+			return rc;
+		}
+	}
 
 	/* Get Channel, event and command context base pointer */
 	rc = mhi_dev_mmio_get_chc_base(mhi);
@@ -1068,6 +1275,8 @@ static int mhi_dev_cache_host_cfg(struct mhi_dev *mhi)
 				GFP_KERNEL);
 	if (!mhi->ev_ctx_cache)
 		return -ENOMEM;
+	memset(mhi->ev_ctx_cache, 0, sizeof(struct mhi_dev_ev_ctx) *
+						mhi->cfg.event_rings);
 
 	mhi->ch_ctx_cache = dma_alloc_coherent(&pdev->dev,
 				sizeof(struct mhi_dev_ch_ctx) *
@@ -1076,22 +1285,34 @@ static int mhi_dev_cache_host_cfg(struct mhi_dev *mhi)
 				GFP_KERNEL);
 	if (!mhi_ctx->ch_ctx_cache)
 		return -ENOMEM;
+	memset(mhi->ch_ctx_cache, 0, sizeof(struct mhi_dev_ch_ctx) *
+						mhi->cfg.channels);
+
+	if (mhi->use_ipa) {
+		data_transfer.phy_addr = mhi->cmd_ctx_cache_dma_handle;
+		data_transfer.host_pa = mhi->cmd_ctx_shadow.host_pa;
+	}
+
+	data_transfer.size = mhi->cmd_ctx_shadow.size;
 
 	/* Cache the command and event context */
-	mhi_dev_read_from_host(&mhi->cmd_ctx_shadow,
-				mhi->cmd_ctx_cache_dma_handle,
-				mhi->cmd_ctx_shadow.size);
+	mhi_dev_read_from_host(mhi, &data_transfer);
 
-	mhi_dev_read_from_host(&mhi->ev_ctx_shadow,
-				mhi->ev_ctx_cache_dma_handle,
-				mhi->ev_ctx_shadow.size);
+	if (mhi->use_ipa) {
+		data_transfer.phy_addr = mhi->ev_ctx_cache_dma_handle;
+		data_transfer.host_pa = mhi->ev_ctx_shadow.host_pa;
+	}
 
-	mhi_log(MHI_MSG_ERROR,
+	data_transfer.size = mhi->ev_ctx_shadow.size;
+
+	mhi_dev_read_from_host(mhi, &data_transfer);
+
+	mhi_log(MHI_MSG_VERBOSE,
 			"cmd ring_base:0x%llx, rp:0x%llx, wp:0x%llx\n",
 					mhi->cmd_ctx_cache->rbase,
 					mhi->cmd_ctx_cache->rp,
 					mhi->cmd_ctx_cache->wp);
-	mhi_log(MHI_MSG_ERROR,
+	mhi_log(MHI_MSG_VERBOSE,
 			"ev ring_base:0x%llx, rp:0x%llx, wp:0x%llx\n",
 					mhi_ctx->ev_ctx_cache->rbase,
 					mhi->ev_ctx_cache->rp,
@@ -1110,7 +1331,7 @@ static int mhi_dev_cache_host_cfg(struct mhi_dev *mhi)
 int mhi_dev_suspend(struct mhi_dev *mhi)
 {
 	int ch_id = 0, rc = 0;
-	struct mhi_addr host_addr;
+	struct mhi_addr data_transfer;
 
 	mutex_lock(&mhi_ctx->mhi_write_test);
 	atomic_set(&mhi->is_suspended, 1);
@@ -1122,19 +1343,27 @@ int mhi_dev_suspend(struct mhi_dev *mhi)
 
 		mhi->ch_ctx_cache[ch_id].ch_state = MHI_DEV_CH_STATE_SUSPENDED;
 
-		host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
+		if (mhi->use_ipa) {
+			data_transfer.host_pa = mhi->ch_ctx_shadow.host_pa +
 				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		} else {
+			data_transfer.device_va = mhi->ch_ctx_shadow.device_va +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+			data_transfer.device_pa = mhi->ch_ctx_shadow.device_pa +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		}
+
+		data_transfer.size = sizeof(enum mhi_dev_ch_ctx_state);
+		data_transfer.virt_addr = &mhi->ch_ctx_cache[ch_id].ch_state;
 
 		/* update the channel state in the host */
-		mhi_dev_write_to_host(&host_addr,
-			&mhi->ch_ctx_cache[ch_id].ch_state,
-			sizeof(enum mhi_dev_ch_ctx_state), mhi);
+		mhi_dev_write_to_host(mhi, &data_transfer);
 
 	}
 
-	rc = ipa_dma_disable();
-	if (rc)
-		pr_err("Disable IPA failed\n");
+	atomic_set(&mhi->mhi_dev_wake, 0);
+	pm_relax(mhi->dev);
+	mhi_log(MHI_MSG_VERBOSE, "releasing mhi wakelock\n");
 
 	mutex_unlock(&mhi_ctx->mhi_write_test);
 
@@ -1145,13 +1374,7 @@ EXPORT_SYMBOL(mhi_dev_suspend);
 int mhi_dev_resume(struct mhi_dev *mhi)
 {
 	int ch_id = 0, rc = 0;
-	struct mhi_addr host_addr;
-
-	rc = ipa_dma_enable();
-	if (rc) {
-		pr_err("IPA enable failed\n");
-		return rc;
-	}
+	struct mhi_addr data_transfer;
 
 	for (ch_id = 0; ch_id < mhi->cfg.channels; ch_id++) {
 		if (mhi->ch_ctx_cache[ch_id].ch_state !=
@@ -1159,13 +1382,21 @@ int mhi_dev_resume(struct mhi_dev *mhi)
 			continue;
 
 		mhi->ch_ctx_cache[ch_id].ch_state = MHI_DEV_CH_STATE_RUNNING;
-		host_addr.host_pa = mhi->ch_ctx_shadow.host_pa +
+		if (mhi->use_ipa) {
+			data_transfer.host_pa = mhi->ch_ctx_shadow.host_pa +
 				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		} else {
+			data_transfer.device_va = mhi->ch_ctx_shadow.device_va +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+			data_transfer.device_pa = mhi->ch_ctx_shadow.device_pa +
+				sizeof(struct mhi_dev_ch_ctx) * ch_id;
+		}
+
+		data_transfer.size = sizeof(enum mhi_dev_ch_ctx_state);
+		data_transfer.virt_addr = &mhi->ch_ctx_cache[ch_id].ch_state;
 
 		/* update the channel state in the host */
-		mhi_dev_write_to_host(&host_addr,
-				&mhi->ch_ctx_cache[ch_id].ch_state,
-				sizeof(enum mhi_dev_ch_ctx_state), mhi);
+		mhi_dev_write_to_host(mhi, &data_transfer);
 	}
 
 	atomic_set(&mhi->is_suspended, 0);
@@ -1367,19 +1598,19 @@ int mhi_dev_read_channel(struct mhi_dev_client *handle_client,
 			bytes_to_read = min(usr_buf_remaining,
 						ch->tre_bytes_left);
 			*chain = 1;
-			mhi_log(MHI_MSG_ERROR,
+			mhi_log(MHI_MSG_VERBOSE,
 				"remaining buffered data size %d\n",
 				(int) ch->tre_bytes_left);
 		} else {
 			if (ring->rd_offset == ring->wr_offset) {
-				mhi_log(MHI_MSG_ERROR,
+				mhi_log(MHI_MSG_VERBOSE,
 					"nothing to read, returning\n");
 				bytes_read = 0;
 				goto exit;
 			}
 
 			if (ch->state == MHI_DEV_CH_STOPPED) {
-				mhi_log(MHI_MSG_ERROR,
+				mhi_log(MHI_MSG_VERBOSE,
 					"channel (%d) already stopped\n",
 					ch_id);
 				bytes_read = -1;
@@ -1390,7 +1621,7 @@ int mhi_dev_read_channel(struct mhi_dev_client *handle_client,
 			ch->tre_size = el->tre.len;
 			ch->tre_bytes_left = ch->tre_size;
 
-			mhi_log(MHI_MSG_ERROR,
+			mhi_log(MHI_MSG_VERBOSE,
 			"user_buf_remaining %d, ch->tre_size %d\n",
 			usr_buf_remaining, ch->tre_size);
 			bytes_to_read = min(usr_buf_remaining, ch->tre_size);
@@ -1400,7 +1631,7 @@ int mhi_dev_read_channel(struct mhi_dev_client *handle_client,
 		read_from_loc = ch->tre_loc + addr_offset;
 		write_to_loc = (uint32_t) buf + (buf_size - usr_buf_remaining);
 
-		mhi_log(MHI_MSG_ERROR, "reading %d bytes from chan %d\n",
+		mhi_log(MHI_MSG_VERBOSE, "reading %d bytes from chan %d\n",
 				bytes_to_read, ch_id);
 
 		mhi_transfer_host_to_device((void *) write_to_loc,
@@ -1490,9 +1721,9 @@ int mhi_dev_write_channel(struct mhi_dev_client *handle_client,
 
 	atomic_inc(&mhi_ctx->write_active);
 	while (atomic_read(&mhi_ctx->is_suspended) &&
-			suspend_wait_timeout < MHI_SUSPEND_WAIT_TIMEOUT) {
+			suspend_wait_timeout < MHI_SUSPEND_TIMEOUT) {
 		/* wait for the suspend to finish */
-		usleep_range(MHI_SUSPEND_WAIT_MIN, MHI_SUSPEND_WAIT_MAX);
+		msleep(MHI_SUSPEND_MIN);
 		suspend_wait_timeout++;
 	}
 
@@ -1552,7 +1783,7 @@ int mhi_dev_write_channel(struct mhi_dev_client *handle_client,
 
 		if (mhi_dev_send_completion_event(ch,
 				ring->rd_offset, bytes_to_write, code) < 0) {
-			mhi_log(MHI_MSG_ERROR,
+			mhi_log(MHI_MSG_VERBOSE,
 				"error sending completion event ch_id:%lld\n",
 				ch_id);
 		}
@@ -1589,19 +1820,21 @@ static void mhi_dev_enable(struct work_struct *work)
 				struct mhi_dev, ring_init_cb_work);
 
 	enum mhi_dev_state state;
-	uint32_t max_cnt = 0;
+	uint32_t max_cnt = 0, bhi_intvec = 0;
 
 
-	rc = ipa_dma_init();
-	if (rc) {
-		pr_err("ipa dma init failed\n");
-		return;
-	}
+	if (mhi->use_ipa) {
+		rc = ipa_dma_init();
+		if (rc) {
+			pr_err("ipa dma init failed\n");
+			return;
+		}
 
-	rc = ipa_dma_enable();
-	if (rc) {
-		pr_err("ipa enable failed\n");
-		return;
+		rc = ipa_dma_enable();
+		if (rc) {
+			pr_err("ipa enable failed\n");
+			return;
+		}
 	}
 
 	rc = mhi_dev_ring_init(mhi);
@@ -1610,27 +1843,28 @@ static void mhi_dev_enable(struct work_struct *work)
 		return;
 	}
 
-	/* Invoke MHI SM when device is in RESET state */
-	mhi_dev_sm_init(mhi);
-
-	/* set the env before setting the ready bit */
-	rc = mhi_dev_mmio_set_env(mhi, MHI_ENV_VALUE);
-	if (rc) {
-		pr_err("%s: env setting failed\n", __func__);
-		return;
-	}
 	mhi_uci_init();
-
-	/* All set...let's notify the host */
-	mhi_dev_sm_set_ready();
-
-	rc = ep_pcie_get_msi_config(mhi->phandle, &msi_cfg);
+	/*Enable MHI dev network stack Interface*/
+	rc = mhi_dev_net_interface_init();
 	if (rc)
-		pr_warn("MHI: error geting msi configs\n");
-	else {
-		rc = ep_pcie_trigger_msi(mhi->phandle, mhi->mhi_ep_msi_num);
-		if (rc)
-			return;
+		pr_err("%s Failed to initialize mhi_dev_net iface\n", __func__);
+
+	rc = mhi_dev_mmio_read(mhi, BHI_INTVEC, &bhi_intvec);
+	if (rc)
+		return;
+
+	if (bhi_intvec != 0xffffffff) {
+		/* Indicate the host that the device is ready */
+		rc = ep_pcie_get_msi_config(mhi->phandle, &msi_cfg);
+		if (!rc) {
+			rc = ep_pcie_trigger_msi(mhi_ctx->phandle, bhi_intvec);
+			if (rc) {
+				pr_err("%s: error sending msi\n", __func__);
+				return;
+			}
+		} else {
+			pr_err("MHI: error geting msi configs\n");
+		}
 	}
 
 	rc = mhi_dev_mmio_get_mhi_state(mhi, &state);
@@ -1639,9 +1873,9 @@ static void mhi_dev_enable(struct work_struct *work)
 		return;
 	}
 
-	while (state != MHI_DEV_M0_STATE && max_cnt < MHI_DEV_M0_MAX_CNT) {
+	while (state != MHI_DEV_M0_STATE && max_cnt < MHI_SUSPEND_TIMEOUT) {
 		/* Wait for Host to set the M0 state */
-		usleep_range(MHI_M0_WAIT_MIN_USLEEP, MHI_M0_WAIT_MAX_USLEEP);
+		msleep(MHI_SUSPEND_MIN);
 		rc = mhi_dev_mmio_get_mhi_state(mhi, &state);
 		if (rc) {
 			pr_err("%s: get mhi state failed\n", __func__);
@@ -1674,6 +1908,9 @@ static void mhi_dev_enable(struct work_struct *work)
 		pr_err("error during hwc_init\n");
 		return;
 	}
+
+	if (mhi_ctx->config_iatu)
+		enable_irq(mhi_ctx->mhi_irq);
 }
 
 static void mhi_ring_init_cb(void *data)
@@ -1736,13 +1973,11 @@ static int get_device_tree_data(struct platform_device *pdev)
 	}
 
 	mhi->ipa_uc_mbox_erdb = res_mem->start;
-
 	mhi_ctx = mhi;
 
 	rc = of_property_read_u32((&pdev->dev)->of_node,
 				"qcom,mhi-ifc-id",
 				&mhi_ctx->ifc_id);
-
 	if (rc) {
 		pr_err("qcom,mhi-ifc-id does not exist.\n");
 		return rc;
@@ -1764,6 +1999,40 @@ static int get_device_tree_data(struct platform_device *pdev)
 		return rc;
 	}
 
+	mhi_ctx->use_ipa = of_property_read_bool((&pdev->dev)->of_node,
+				"qcom,use-ipa-software-channel");
+
+	mhi_ctx->config_iatu = of_property_read_bool((&pdev->dev)->of_node,
+				"qcom,mhi-config-iatu");
+
+	if (mhi_ctx->config_iatu) {
+		rc = of_property_read_u32((&pdev->dev)->of_node,
+				"qcom,mhi-local-pa-base",
+				&mhi_ctx->device_local_pa_base);
+		if (rc) {
+			pr_err("qcom,mhi-local-pa-base does not exist\n");
+			return rc;
+		}
+	}
+
+	if (mhi->config_iatu) {
+		mhi->mhi_irq = platform_get_irq_byname(pdev, "mhi-device-inta");
+		if (mhi->mhi_irq < 0) {
+			pr_err("Invalid MHI device interrupt\n");
+			rc = mhi->mhi_irq;
+			return rc;
+		}
+	}
+
+	device_init_wakeup(mhi->dev, true);
+	/* MHI device will be woken up from PCIe event */
+	device_set_wakeup_capable(mhi->dev, false);
+	/* Hold a wakelock until completion of M0 */
+	pm_stay_awake(mhi->dev);
+	atomic_set(&mhi->mhi_dev_wake, 1);
+
+	mhi_log(MHI_MSG_VERBOSE, "acquiring wakelock\n");
+
 	return 0;
 }
 
@@ -1778,7 +2047,6 @@ static int mhi_init(struct mhi_dev *mhi)
 		pr_err("Failed to update the MMIO init\n");
 		return rc;
 	}
-
 
 	mhi->ring = devm_kzalloc(&pdev->dev,
 			(sizeof(struct mhi_dev_ring) *
@@ -1810,28 +2078,12 @@ static int mhi_init(struct mhi_dev *mhi)
 	return 0;
 }
 
-static int mhi_dev_probe(struct platform_device *pdev)
+static int mhi_dev_resume_mmio_mhi_init(struct mhi_dev *mhi_ctx)
 {
+	struct platform_device *pdev;
 	int rc = 0;
 
-	if (pdev->dev.of_node) {
-		rc = get_device_tree_data(pdev);
-		if (rc) {
-			pr_err("Error reading MHI Dev DT\n");
-			return rc;
-		}
-	}
-
-	mhi_ctx->phandle = ep_pcie_get_phandle(mhi_ctx->ifc_id);
-	if (!mhi_ctx->phandle) {
-		pr_err("PCIe driver is not ready yet.\n");
-		return -EPROBE_DEFER;
-	}
-
-	if (ep_pcie_get_linkstatus(mhi_ctx->phandle) != EP_PCIE_LINK_ENABLED) {
-		pr_err("PCIe link is not ready to use.\n");
-		return -EPROBE_DEFER;
-	}
+	pdev = mhi_ctx->pdev;
 
 	INIT_WORK(&mhi_ctx->chdb_ctrl_work, mhi_dev_scheduler);
 
@@ -1889,6 +2141,12 @@ static int mhi_dev_probe(struct platform_device *pdev)
 		return rc;
 	}
 
+	mhi_ctx->phandle = ep_pcie_get_phandle(mhi_ctx->ifc_id);
+	if (!mhi_ctx->phandle) {
+		pr_err("PCIe driver get handle failed.\n");
+		return -EINVAL;
+	}
+
 	mhi_ctx->event_reg.events = EP_PCIE_EVENT_PM_D3_HOT |
 		EP_PCIE_EVENT_PM_D3_COLD |
 		EP_PCIE_EVENT_PM_D0 |
@@ -1917,6 +2175,94 @@ static int mhi_dev_probe(struct platform_device *pdev)
 		}
 	}
 
+	/* Invoke MHI SM when device is in RESET state */
+	rc = mhi_dev_sm_init(mhi_ctx);
+	if (rc) {
+		pr_err("%s: Error during SM init\n", __func__);
+		return rc;
+	}
+
+	/* set the env before setting the ready bit */
+	rc = mhi_dev_mmio_set_env(mhi_ctx, MHI_ENV_VALUE);
+	if (rc) {
+		pr_err("%s: env setting failed\n", __func__);
+		return rc;
+	}
+
+	/* All set, notify the host */
+	mhi_dev_sm_set_ready();
+
+	if (mhi_ctx->config_iatu) {
+		rc = devm_request_irq(&pdev->dev, mhi_ctx->mhi_irq, mhi_dev_isr,
+			IRQF_TRIGGER_HIGH, "mhi_isr", mhi_ctx);
+		if (rc) {
+			dev_err(&pdev->dev, "request mhi irq failed %d\n", rc);
+			return -EINVAL;
+		}
+
+		disable_irq(mhi_ctx->mhi_irq);
+	}
+
+	return 0;
+}
+
+void mhi_dev_resume_init_with_link_up(struct ep_pcie_notify *notify)
+{
+	int rc = 0;
+
+	if (!notify) {
+		pr_err("Null argument for notify\n");
+		return;
+	}
+
+	mhi_ctx = notify->user;
+	if (!mhi_ctx) {
+		pr_err("Invalid mhi_ctx\n");
+		return;
+	}
+
+	rc = mhi_dev_resume_mmio_mhi_init(mhi_ctx);
+	if (rc) {
+		pr_err("Error during MHI device initialization\n");
+		return;
+	}
+}
+
+static int mhi_dev_probe(struct platform_device *pdev)
+{
+	int rc = 0;
+
+	if (pdev->dev.of_node) {
+		rc = get_device_tree_data(pdev);
+		if (rc) {
+			pr_err("Error reading MHI Dev DT\n");
+			return rc;
+		}
+	}
+
+	mhi_ctx->phandle = ep_pcie_get_phandle(mhi_ctx->ifc_id);
+	if (mhi_ctx->phandle) {
+		/* PCIe link is already up */
+		rc = mhi_dev_resume_mmio_mhi_init(mhi_ctx);
+		if (rc) {
+			pr_err("Error during MHI device initialization\n");
+			return rc;
+		}
+	} else {
+		pr_debug("Register a PCIe callback\n");
+		mhi_ctx->event_reg.events = EP_PCIE_EVENT_LINKUP;
+		mhi_ctx->event_reg.user = mhi_ctx;
+		mhi_ctx->event_reg.mode = EP_PCIE_TRIGGER_CALLBACK;
+		mhi_ctx->event_reg.callback = mhi_dev_resume_init_with_link_up;
+
+		rc = ep_pcie_register_event(mhi_ctx->phandle,
+							&mhi_ctx->event_reg);
+		if (rc) {
+			pr_err("Failed to register for events from PCIe\n");
+			return rc;
+		}
+	}
+
 	return 0;
 }
 
@@ -1941,7 +2287,7 @@ static struct platform_driver mhi_dev_driver = {
 	.remove		= mhi_dev_remove,
 };
 
-module_param(mhi_msg_lvl , uint, S_IRUGO | S_IWUSR);
+module_param(mhi_msg_lvl, uint, S_IRUGO | S_IWUSR);
 module_param(mhi_ipc_msg_lvl, uint, S_IRUGO | S_IWUSR);
 
 MODULE_PARM_DESC(mhi_msg_lvl, "mhi msg lvl");

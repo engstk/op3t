@@ -1,4 +1,4 @@
-/* Copyright (c) 2002,2007-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2002,2007-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -81,6 +81,7 @@ enum kgsl_event_results {
 	{ KGSL_CONTEXT_PER_CONTEXT_TS, "PER_CONTEXT_TS" }, \
 	{ KGSL_CONTEXT_USER_GENERATED_TS, "USER_TS" }, \
 	{ KGSL_CONTEXT_NO_FAULT_TOLERANCE, "NO_FT" }, \
+	{ KGSL_CONTEXT_INVALIDATE_ON_FAULT, "INVALIDATE_ON_FAULT" }, \
 	{ KGSL_CONTEXT_PWR_CONSTRAINT, "PWR" }, \
 	{ KGSL_CONTEXT_SAVE_GMEM, "SAVE_GMEM" }
 
@@ -171,6 +172,7 @@ struct kgsl_functable {
 	void (*regulator_disable_poll)(struct kgsl_device *device);
 	void (*gpu_model)(struct kgsl_device *device, char *str,
 		size_t bufsz);
+	void (*stop_fault_timer)(struct kgsl_device *device);
 };
 
 struct kgsl_ioctl {
@@ -266,6 +268,10 @@ struct kgsl_device {
 
 	u32 snapshot_faultcount;	/* Total number of faults since boot */
 	bool force_panic;		/* Force panic after snapshot dump */
+
+	/* Use CP Crash dumper to get GPU snapshot*/
+	bool snapshot_crashdumper;
+
 	struct kobject snapshot_kobj;
 
 	struct kobject ppd_kobj;
@@ -308,6 +314,7 @@ struct kgsl_device {
 
 /**
  * enum bits for struct kgsl_context.priv
+ * @KGSL_CONTEXT_PRIV_SUBMITTED - The context has submitted commands to gpu.
  * @KGSL_CONTEXT_PRIV_DETACHED  - The context has been destroyed by userspace
  *	and is no longer using the gpu.
  * @KGSL_CONTEXT_PRIV_INVALID - The context has been destroyed by the kernel
@@ -317,7 +324,8 @@ struct kgsl_device {
  *	reserved for devices specific use.
  */
 enum kgsl_context_priv {
-	KGSL_CONTEXT_PRIV_DETACHED = 0,
+	KGSL_CONTEXT_PRIV_SUBMITTED = 0,
+	KGSL_CONTEXT_PRIV_DETACHED,
 	KGSL_CONTEXT_PRIV_INVALID,
 	KGSL_CONTEXT_PRIV_PAGEFAULT,
 	KGSL_CONTEXT_PRIV_DEVICE_SPECIFIC = 16,

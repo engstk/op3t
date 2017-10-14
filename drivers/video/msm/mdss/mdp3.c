@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  * Copyright (C) 2007 Google Incorporated
  *
  * This software is licensed under the terms of the GNU General Public
@@ -77,6 +77,13 @@ struct mdp3_hw_resource *mdp3_res;
 		.ab = (ab_val),				\
 		.ib = (ib_val),				\
 	}
+
+#define SET_BIT(value, bit_num) \
+{ \
+	value[bit_num >> 3] |= (1 << (bit_num & 7)); \
+}
+
+#define MAX_BPP_SUPPORTED 4
 
 static struct msm_bus_vectors mdp_bus_vectors[] = {
 	MDP_BUS_VECTOR_ENTRY(0, 0),
@@ -159,7 +166,6 @@ static irqreturn_t mdp3_irq_handler(int irq, void *ptr)
 		spin_unlock(&mdata->irq_lock);
 		return IRQ_HANDLED;
 	}
-
 	mdp_status = MDP3_REG_READ(MDP3_REG_INTR_STATUS);
 	mdp_interrupt = mdp_status;
 	pr_debug("mdp3_irq_handler irq=%d\n", mdp_interrupt);
@@ -443,12 +449,16 @@ static int mdp3_clk_update(u32 clk_idx, u32 enable)
 			mdp3_res->clock_ref_count[clk_idx]--;
 			return ret;
 		}
+		if (clk_idx == MDP3_CLK_MDP_CORE)
+			MDSS_XLOG(enable);
 		ret = clk_enable(clk);
 		if (ret)
 			pr_err("%s: clock enable failed %d\n", __func__,
 					clk_idx);
 	} else if (count == 0) {
 		pr_debug("clk=%d disable\n", clk_idx);
+		if (clk_idx == MDP3_CLK_MDP_CORE)
+			MDSS_XLOG(enable);
 		clk_disable(clk);
 		clk_unprepare(clk);
 		ret = 0;
@@ -1070,6 +1080,17 @@ u64 mdp3_get_panic_lut_cfg(u32 panel_width)
 	panic_config = panic_config << 32;
 	panic_config |= panic_mask;
 	return panic_config;
+}
+
+int mdp3_enable_panic_ctrl(void)
+{
+	int rc = 0;
+
+	if (MDP3_REG_READ(MDP3_PANIC_ROBUST_CTRL) == 0) {
+		pr_err("%s: Enable Panic Control\n", __func__);
+		MDP3_REG_WRITE(MDP3_PANIC_ROBUST_CTRL, BIT(0));
+	}
+	return rc;
 }
 
 int mdp3_qos_remapper_setup(struct mdss_panel_data *panel)
@@ -2196,8 +2217,7 @@ static int mdp3_is_display_on(struct mdss_panel_data *pdata)
 
 	mdp3_res->splash_mem_addr = MDP3_REG_READ(MDP3_REG_DMA_P_IBUF_ADDR);
 
-	rc = mdp3_clk_enable(0, 0);
-	if (rc)
+	if (mdp3_clk_enable(0, 0))
 		pr_err("fail to turn off MDP core clks\n");
 	return rc;
 }
@@ -2260,6 +2280,14 @@ splash_on_err:
 static int mdp3_panel_register_done(struct mdss_panel_data *pdata)
 {
 	int rc = 0;
+	u64 ab = 0; u64 ib = 0;
+	u64 mdp_clk_rate = 0;
+
+	/* Store max bandwidth supported in mdp res */
+	mdp3_calc_dma_res(&pdata->panel_info, &mdp_clk_rate, &ab, &ib,
+			MAX_BPP_SUPPORTED);
+	do_div(ab, 1024);
+	mdp3_res->max_bw = ab+1;
 
 	/*
 	* If idle pc feature is not enabled, then get a reference to the
@@ -2293,10 +2321,30 @@ static int mdp3_panel_register_done(struct mdss_panel_data *pdata)
 	return rc;
 }
 
+/* mdp3_clear_irq() - Clear interrupt
+ * @ interrupt_mask : interrupt mask
+ *
+ * This function clear sync irq for command mode panel.
+ * When system is entering in idle screen state.
+ */
+void mdp3_clear_irq(u32 interrupt_mask)
+{
+	unsigned long flag;
+	u32 irq_status = 0;
+
+	spin_lock_irqsave(&mdp3_res->irq_lock, flag);
+	irq_status = interrupt_mask &
+		MDP3_REG_READ(MDP3_REG_INTR_STATUS);
+	if (irq_status)
+		MDP3_REG_WRITE(MDP3_REG_INTR_CLEAR, irq_status);
+	spin_unlock_irqrestore(&mdp3_res->irq_lock, flag);
+
+}
+
 /* mdp3_autorefresh_disable() - Disable Auto refresh
  * @ panel_info : pointer to panel configuration structure
  *
- * This function displable Auto refresh block for command mode panel.
+ * This function disable Auto refresh block for command mode panel.
  */
 int mdp3_autorefresh_disable(struct mdss_panel_info *panel_info)
 {
@@ -2397,6 +2445,61 @@ static void mdp3_dma_underrun_intr_handler(int type, void *arg)
 	}
 }
 
+uint32_t ppp_formats_supported[] = {
+	MDP_RGB_565,
+	MDP_BGR_565,
+	MDP_RGB_888,
+	MDP_BGR_888,
+	MDP_XRGB_8888,
+	MDP_ARGB_8888,
+	MDP_RGBA_8888,
+	MDP_BGRA_8888,
+	MDP_RGBX_8888,
+	MDP_Y_CBCR_H2V1,
+	MDP_Y_CBCR_H2V2,
+	MDP_Y_CBCR_H2V2_ADRENO,
+	MDP_Y_CBCR_H2V2_VENUS,
+	MDP_Y_CRCB_H2V1,
+	MDP_Y_CRCB_H2V2,
+	MDP_YCRYCB_H2V1,
+	MDP_BGRX_8888,
+};
+
+uint32_t dma_formats_supported[] = {
+	MDP_RGB_565,
+	MDP_RGB_888,
+	MDP_XRGB_8888,
+};
+
+static void __mdp3_set_supported_formats(void)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ppp_formats_supported); i++)
+		SET_BIT(mdp3_res->ppp_formats, ppp_formats_supported[i]);
+
+	for (i = 0; i < ARRAY_SIZE(dma_formats_supported); i++)
+		SET_BIT(mdp3_res->dma_formats, dma_formats_supported[i]);
+}
+
+static void __update_format_supported_info(char *buf, int *cnt)
+{
+	int j;
+	size_t len = PAGE_SIZE;
+	int num_bytes = BITS_TO_BYTES(MDP_IMGTYPE_LIMIT1);
+#define SPRINT(fmt, ...) \
+	(*cnt += scnprintf(buf + *cnt, len - *cnt, fmt, ##__VA_ARGS__))
+
+	SPRINT("ppp_input_fmts=");
+	for (j = 0; j < num_bytes; j++)
+		SPRINT("%d,", mdp3_res->ppp_formats[j]);
+	SPRINT("\ndma_output_fmts=");
+	for (j = 0; j < num_bytes; j++)
+		SPRINT("%d,", mdp3_res->dma_formats[j]);
+	SPRINT("\n");
+#undef SPRINT
+}
+
 static ssize_t mdp3_show_capabilities(struct device *dev,
 		struct device_attribute *attr, char *buf)
 {
@@ -2406,10 +2509,32 @@ static ssize_t mdp3_show_capabilities(struct device *dev,
 #define SPRINT(fmt, ...) \
 		(cnt += scnprintf(buf + cnt, len - cnt, fmt, ##__VA_ARGS__))
 
+	SPRINT("dma_pipes=%d\n", 1);
 	SPRINT("mdp_version=3\n");
 	SPRINT("hw_rev=%d\n", 305);
+	SPRINT("pipe_count:%d\n", 1);
+	SPRINT("pipe_num:%d pipe_type:dma pipe_ndx:%d rects:%d ", 0, 1, 1);
+	SPRINT("pipe_is_handoff:%d display_id:%d\n", 0, 0);
+	__update_format_supported_info(buf, &cnt);
+	SPRINT("rgb_pipes=%d\n", 0);
+	SPRINT("vig_pipes=%d\n", 0);
 	SPRINT("dma_pipes=%d\n", 1);
-	SPRINT("\n");
+	SPRINT("blending_stages=%d\n", 1);
+	SPRINT("cursor_pipes=%d\n", 0);
+	SPRINT("max_cursor_size=%d\n", 0);
+	SPRINT("smp_count=%d\n", 0);
+	SPRINT("smp_size=%d\n", 0);
+	SPRINT("smp_mb_per_pipe=%d\n", 0);
+	SPRINT("max_downscale_ratio=%d\n", PPP_DOWNSCALE_MAX);
+	SPRINT("max_upscale_ratio=%d\n", PPP_UPSCALE_MAX);
+	SPRINT("max_pipe_bw=%u\n", mdp3_res->max_bw);
+	SPRINT("max_bandwidth_low=%u\n", mdp3_res->max_bw);
+	SPRINT("max_bandwidth_high=%u\n", mdp3_res->max_bw);
+	SPRINT("max_mdp_clk=%u\n", MDP_CORE_CLK_RATE_MAX);
+	SPRINT("clk_fudge_factor=%u,%u\n", CLK_FUDGE_NUM, CLK_FUDGE_DEN);
+	SPRINT("features=has_ppp\n");
+
+#undef SPRINT
 
 	return cnt;
 }
@@ -2598,15 +2723,18 @@ int mdp3_footswitch_ctrl(int enable)
 	int rc = 0;
 	int active_cnt = 0;
 
+	mutex_lock(&mdp3_res->fs_idle_pc_lock);
+	MDSS_XLOG(enable);
 	if (!mdp3_res->fs_ena && enable) {
 		rc = regulator_enable(mdp3_res->fs);
 		if (rc) {
 			pr_err("mdp footswitch ctrl enable failed\n");
+			mutex_unlock(&mdp3_res->fs_idle_pc_lock);
 			return -EINVAL;
 		}
-			pr_debug("mdp footswitch ctrl enable success\n");
+		pr_debug("mdp footswitch ctrl enable success\n");
 		mdp3_enable_regulator(true);
-			mdp3_res->fs_ena = true;
+		mdp3_res->fs_ena = true;
 	} else if (!enable && mdp3_res->fs_ena) {
 		active_cnt = atomic_read(&mdp3_res->active_intf_cnt);
 		if (active_cnt != 0) {
@@ -2622,13 +2750,16 @@ int mdp3_footswitch_ctrl(int enable)
 		rc = regulator_disable(mdp3_res->fs);
 		if (rc) {
 			pr_err("mdp footswitch ctrl disable failed\n");
+			mutex_unlock(&mdp3_res->fs_idle_pc_lock);
 			return -EINVAL;
 		}
 			mdp3_res->fs_ena = false;
+		pr_debug("mdp3 footswitch ctrl disable configured\n");
 	} else {
 		pr_debug("mdp3 footswitch ctrl already configured\n");
 	}
 
+	mutex_unlock(&mdp3_res->fs_idle_pc_lock);
 	return rc;
 }
 
@@ -2649,8 +2780,7 @@ int mdp3_panel_get_intf_status(u32 disp_num, u32 intf_type)
 	/* DSI video mode or command mode */
 	rc = (status == 0x180000) || (status == 0x080000);
 
-	rc = mdp3_clk_enable(0, 0);
-	if (rc)
+	if (mdp3_clk_enable(0, 0))
 		pr_err("fail to turn off MDP core clks\n");
 	return rc;
 }
@@ -2690,6 +2820,7 @@ static int mdp3_probe(struct platform_device *pdev)
 	pdev->id = 0;
 	mdp3_res->pdev = pdev;
 	mutex_init(&mdp3_res->res_mutex);
+	mutex_init(&mdp3_res->fs_idle_pc_lock);
 	spin_lock_init(&mdp3_res->irq_lock);
 	platform_set_drvdata(pdev, mdp3_res);
 	atomic_set(&mdp3_res->active_intf_cnt, 0);
@@ -2773,6 +2904,8 @@ static int mdp3_probe(struct platform_device *pdev)
 	if (rc)
 		pr_err("mdss smmu init failed\n");
 
+	__mdp3_set_supported_formats();
+
 	mdp3_res->mdss_util->mdp_probe_done = true;
 	pr_debug("%s: END\n", __func__);
 
@@ -2827,7 +2960,7 @@ static  int mdp3_resume_sub(void)
 static int mdp3_pm_suspend(struct device *dev)
 {
 	dev_dbg(dev, "Display pm suspend\n");
-
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_suspend_sub();
 }
 
@@ -2844,6 +2977,7 @@ static int mdp3_pm_resume(struct device *dev)
 	pm_runtime_set_suspended(dev);
 	pm_runtime_enable(dev);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_resume_sub();
 }
 #endif
@@ -2853,6 +2987,7 @@ static int mdp3_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	pr_debug("Display suspend\n");
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_suspend_sub();
 }
 
@@ -2860,6 +2995,7 @@ static int mdp3_resume(struct platform_device *pdev)
 {
 	pr_debug("Display resume\n");
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	return mdp3_resume_sub();
 }
 #else
@@ -2880,6 +3016,7 @@ static int mdp3_runtime_resume(struct device *dev)
 	if (!mdp3_res->idle_pc)
 		device_for_each_child(dev, &device_on, mdss_fb_suspres_panel);
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	mdp3_footswitch_ctrl(1);
 
 	return 0;
@@ -2904,6 +3041,7 @@ static int mdp3_runtime_suspend(struct device *dev)
 		return -EBUSY;
 	}
 
+	MDSS_XLOG(XLOG_FUNC_ENTRY);
 	mdp3_footswitch_ctrl(0);
 
 	/* do not suspend panels when going in to idle power collapse */

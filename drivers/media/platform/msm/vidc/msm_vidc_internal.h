@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -149,6 +149,7 @@ struct msm_vidc_drv {
 	struct dentry *debugfs_root;
 	int thermal_level;
 	u32 platform_version;
+	u32 capability_version;
 };
 
 struct msm_video_device {
@@ -255,7 +256,7 @@ struct msm_vidc_inst {
 	void *session;
 	struct session_prop prop;
 	enum instance_state state;
-	struct msm_vidc_format *fmts[MAX_PORT_NUM];
+	struct msm_vidc_format fmts[MAX_PORT_NUM];
 	struct buf_queue bufq[MAX_PORT_NUM];
 	struct msm_vidc_list pendingq;
 	struct msm_vidc_list scratchbufs;

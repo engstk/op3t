@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -249,7 +249,7 @@ struct mdss_smmu_ops {
 	void (*smmu_unmap_dma_buf)(struct sg_table *table, int domain,
 			int dir, struct dma_buf *dma_buf);
 	int (*smmu_dma_alloc_coherent)(struct device *dev, size_t size,
-			dma_addr_t *phys, dma_addr_t *iova, void *cpu_addr,
+			dma_addr_t *phys, dma_addr_t *iova, void **cpu_addr,
 			gfp_t gfp, int domain);
 	void (*smmu_dma_free_coherent)(struct device *dev, size_t size,
 			void *cpu_addr, dma_addr_t phys, dma_addr_t iova,
@@ -506,6 +506,9 @@ struct mdss_data_type {
 	u32 bcolor1;
 	u32 bcolor2;
 	struct mdss_scaler_block *scaler_off;
+
+	u32 splash_intf_sel;
+	u32 splash_split_disp;
 };
 
 extern struct mdss_data_type *mdss_res;

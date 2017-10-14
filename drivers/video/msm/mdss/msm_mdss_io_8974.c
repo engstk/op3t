@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1796,8 +1796,10 @@ static int mdss_dsi_ulps_config(struct mdss_dsi_ctrl_pdata *ctrl,
 		 * to be in stop state.
 		 */
 		MIPI_OUTP(ctrl->ctrl_base + 0x0AC, active_lanes << 16);
+		wmb(); /* ensure lanes are put to stop state */
 
 		MIPI_OUTP(ctrl->ctrl_base + 0x0AC, 0x0);
+		wmb(); /* ensure lanes are in proper state */
 
 		/*
 		 * Wait for a short duration before enabling
@@ -2233,10 +2235,10 @@ int mdss_dsi_post_clkoff_cb(void *priv,
 		return -EINVAL;
 	}
 
+	pdata = &ctrl->panel_data;
 	if ((clk_type & MDSS_DSI_CORE_CLK) &&
 	    (curr_state == MDSS_DSI_CLK_OFF)) {
 		sdata = ctrl->shared_data;
-		pdata = &ctrl->panel_data;
 
 		for (i = DSI_MAX_PM - 1; i >= DSI_CORE_PM; i--) {
 			if ((ctrl->ctrl_state & CTRL_STATE_DSI_ACTIVE) &&
@@ -2254,6 +2256,16 @@ int mdss_dsi_post_clkoff_cb(void *priv,
 				ctrl->core_power = false;
 			}
 		}
+
+		/*
+		 * temp workaround until framework issues pertaining to LP2
+		 * power state transitions are fixed. For now, we internally
+		 * transition to LP2 state whenever core power is turned off
+		 * in LP1 state
+		 */
+		if (mdss_dsi_is_panel_on_lp(pdata))
+			mdss_dsi_panel_power_ctrl(pdata,
+				MDSS_PANEL_POWER_LP2);
 	}
 	return rc;
 }
@@ -2273,10 +2285,10 @@ int mdss_dsi_pre_clkon_cb(void *priv,
 		return -EINVAL;
 	}
 
+	pdata = &ctrl->panel_data;
 	if ((clk_type & MDSS_DSI_CORE_CLK) && (new_state == MDSS_DSI_CLK_ON) &&
 	    (ctrl->core_power == false)) {
 		sdata = ctrl->shared_data;
-		pdata = &ctrl->panel_data;
 		/*
 		 * Enable DSI core power
 		 * 1.> PANEL_PM are controlled as part of
@@ -2304,8 +2316,15 @@ int mdss_dsi_pre_clkon_cb(void *priv,
 			}
 
 		}
+		/*
+		 * temp workaround until framework issues pertaining to LP2
+		 * power state transitions are fixed. For now, if we intend to
+		 * send a frame update when in LP1, we have to explicitly exit
+		 * LP2 state here
+		 */
+		if (mdss_dsi_is_panel_on_ulp(pdata))
+			mdss_dsi_panel_power_ctrl(pdata, MDSS_PANEL_POWER_LP1);
 	}
-
 	/* Disable dynamic clock gating*/
 	if (ctrl->mdss_util->dyn_clk_gating_ctrl)
 		ctrl->mdss_util->dyn_clk_gating_ctrl(0);
